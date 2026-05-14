@@ -37,6 +37,8 @@ npm run build-assets -- run --input ./raw_images --output ./optimized_split --ch
 GitHubリポジトリ:
 
 - `https://github.com/Haritan4141/discord-post-tool`
+- ローカル `main` は `origin/main` を追跡。
+- 初回コミット `Initial commit` をGitHubへpush済み。
 
 ## 現在の作業目的
 
@@ -355,3 +357,4 @@ Git操作を提案する場合は、実行内容とリスクを説明するこ�
 - 2026-05-14: GUIのログ表示欄がアプリ全体を縦に伸ばさないよう、ログ本文のみスクロールするCSSへ修正。
 - 2026-05-14: 起動時ウィンドウを大きくし、メニューバー自動非表示とフォーム余白調整でログ欄の可視領域を拡大。
 - 2026-05-14: GitHub管理開始準備。リポジトリURLを記録し、`.gitignore` に `raw_images/` と `example/` などの実データ/生成物除外を追加。
+- 2026-05-14: Git初期化、`Initial commit` 作成、`origin` 設定、`main` ブランチをGitHubへpush完了。
