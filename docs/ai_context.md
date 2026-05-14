@@ -129,6 +129,8 @@ GUIで実装した内容:
 - Discord投稿タブで投稿入力フォルダ、Guild ID、Bot Token一時入力、投稿モード、サイズ上限、カテゴリ/件数フィルタを指定可能。
 - ログ欄はアプリ全体を縦に伸ばさず、ログ本文だけがスクロールするCSSに調整済み。
 - 起動時ウィンドウは `1280x900`、最小サイズは `1040x760`。メニューバーは自動非表示。フォーム余白を詰め、ログ欄に最低190px相当の表示領域を確保。
+- clone直後は `npm install` が必要。READMEに初回セットアップ手順を記載済み。
+- `start-gui.bat` は `node_modules\.bin\electron.cmd` が無い場合、初回だけ `npm install` を実行する。Node.js/npm自体は事前インストールが必要。
 - Guild ID欄に「確認」ボタンとサーバー名表示を追加。Bot TokenとGuild IDを使ってDiscord API v10のGuild情報を取得し、Guild IDのそばにサーバー名を表示する。
 - Bot Token欄は保存しない。`.env` のTokenを使う運用を基本とする。
 - GUIログ欄にCLI stdout/stderrを表示。
@@ -221,6 +223,7 @@ npm run build-assets -- run --input ./raw_images --output ./tmp/quality-fixed-90
 - `npm run app:smoke` 実行時、GUIが既に開いている場合はElectronのキャッシュ作成警告がstderrに出ることがあるが、終了コードは0。
 - ログ欄スクロールCSS変更後も `npm run app:smoke` は成功。
 - ウィンドウサイズ拡大とUI余白調整後も `node --check src/gui/main.js` と `npm run app:smoke` は成功。
+- clone後セットアップ手順README追記と `start-gui.bat` 初回install対応後も `npm run app:smoke` は成功。
 
 まだ確認できていないこと:
 
@@ -358,3 +361,4 @@ Git操作を提案する場合は、実行内容とリスクを説明するこ�
 - 2026-05-14: 起動時ウィンドウを大きくし、メニューバー自動非表示とフォーム余白調整でログ欄の可視領域を拡大。
 - 2026-05-14: GitHub管理開始準備。リポジトリURLを記録し、`.gitignore` に `raw_images/` と `example/` などの実データ/生成物除外を追加。
 - 2026-05-14: Git初期化、`Initial commit` 作成、`origin` 設定、`main` ブランチをGitHubへpush完了。
+- 2026-05-14: READMEにclone直後の初回セットアップ手順を追加。`start-gui.bat` は依存関係未導入時に `npm install` を実行するよう変更。

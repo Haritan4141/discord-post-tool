@@ -2,6 +2,42 @@
 
 Discordサーバーに、ローカルフォルダ構成どおりのカテゴリ/チャンネルを作り、`.zip` と `.pdf` を一括投稿するツールです。
 
+## 初回セットアップ
+
+clone直後は依存パッケージが入っていないため、最初にセットアップが必要です。
+
+必要なもの:
+
+- Node.js 20以上
+- npm
+- Git
+
+Windows PowerShellでは次の手順で起動できます。
+
+```powershell
+git clone https://github.com/Haritan4141/discord-post-tool.git
+cd discord-post-tool
+npm install
+copy .env.example .env
+notepad .env
+npm run app
+```
+
+`.env` にはDiscord Botの情報を入れます。
+
+```env
+DISCORD_BOT_TOKEN=Botのトークン
+DISCORD_GUILD_ID=投稿先サーバーID
+```
+
+Windowsではプロジェクト直下の `start-gui.bat` からも起動できます。`node_modules` が無い場合は、初回だけ自動で `npm install` を実行します。ただし、Node.js/npm自体は事前にインストールされている必要があります。
+
+起動しない場合は、まず次を確認してください。
+
+- `npm` が見つからない: Node.js 20以上をインストールしてください。
+- `electron` が見つからない: `npm install` を実行してください。
+- サーバー名取得や投稿ができない: `.env` の `DISCORD_BOT_TOKEN` と `DISCORD_GUILD_ID` を確認してください。
+
 ## デスクトップアプリ
 
 GUI版はElectronアプリとして起動できます。内部では既存CLIを呼び出すため、CLIで固めた投稿・変換仕様をそのまま使います。
@@ -44,7 +80,7 @@ example/
 
 チャンネル名はDiscord用に自動整形します。空白、`：`、`:` などは `-` に変換します。
 
-## 準備
+## Discord Bot設定
 
 `.env.example` を参考に `.env` を作ります。
 
