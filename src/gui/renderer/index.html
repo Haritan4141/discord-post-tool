@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Discord Post Tool</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">D</div>
+          <div>
+            <h1>Discord Post Tool</h1>
+            <p>画像変換と一括投稿</p>
+          </div>
+        </div>
+
+        <nav class="tabs" aria-label="機能">
+          <button class="tab-button active" data-tab="assets" type="button">
+            <span class="icon">▦</span>
+            画像変換
+          </button>
+          <button class="tab-button" data-tab="post" type="button">
+            <span class="icon">#</span>
+            Discord投稿
+          </button>
+        </nav>
+
+        <div class="status-panel">
+          <div class="status-row">
+            <span>Bot Token</span>
+            <strong id="tokenStatus">確認中</strong>
+          </div>
+          <div class="status-row">
+            <span>Guild ID</span>
+            <strong id="guildStatus">確認中</strong>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <section class="toolbar">
+          <div>
+            <h2 id="viewTitle">画像変換</h2>
+            <p id="viewSubtitle">raw_images から Discord 投稿用の zip/pdf を生成します。</p>
+          </div>
+          <button id="stopJob" class="ghost danger" type="button" disabled>停止</button>
+        </section>
+
+        <section id="assetsView" class="view active">
+          <div class="form-grid">
+            <label class="field wide">
+              <span>入力フォルダ</span>
+              <div class="folder-field">
+                <input id="assetInputDir" type="text" />
+                <button class="icon-button" data-folder-target="assetInputDir" type="button" title="フォルダを選択">…</button>
+              </div>
+            </label>
+
+            <label class="field wide">
+              <span>出力フォルダ</span>
+              <div class="folder-field">
+                <input id="assetOutputDir" type="text" />
+                <button class="icon-button" data-folder-target="assetOutputDir" type="button" title="フォルダを選択">…</button>
+              </div>
+            </label>
+
+            <label class="field">
+              <span>分割枚数</span>
+              <input id="assetChunkSize" type="number" min="1" value="50" />
+            </label>
+
+            <label class="field">
+              <span>目標サイズ MiB</span>
+              <input id="assetTargetMiB" type="number" min="1" step="0.1" value="9.8" />
+            </label>
+
+            <label class="field">
+              <span>最低品質</span>
+              <input id="assetMinQuality" type="number" min="1" max="100" value="42" />
+            </label>
+
+            <label class="field">
+              <span>最高品質</span>
+              <input id="assetMaxQuality" type="number" min="1" max="100" value="95" />
+            </label>
+
+            <label class="field">
+              <span>固定品質</span>
+              <input id="assetFixedQuality" type="number" min="1" max="100" value="89" disabled />
+            </label>
+
+            <label class="field">
+              <span>並列数</span>
+              <input id="assetConcurrency" type="number" min="1" max="16" value="4" />
+            </label>
+
+            <label class="field">
+              <span>作品名フィルタ</span>
+              <input id="assetSetName" type="text" placeholder="任意" />
+            </label>
+
+            <label class="field">
+              <span>処理件数</span>
+              <input id="assetLimit" type="number" min="1" placeholder="空なら全件" />
+            </label>
+          </div>
+
+          <div class="switch-grid">
+            <label class="check-row">
+              <input id="assetPreserveResolution" type="checkbox" checked />
+              <span>解像度を維持する</span>
+            </label>
+            <label class="check-row">
+              <input id="assetFixedQualityEnabled" type="checkbox" />
+              <span>品質固定で高速化する</span>
+            </label>
+            <label class="check-row">
+              <input id="assetForce" type="checkbox" checked />
+              <span>既存出力を上書きする</span>
+            </label>
+            <label class="check-row">
+              <input id="assetKeepJpgs" type="checkbox" />
+              <span>zip/pdf用JPGも保存する</span>
+            </label>
+          </div>
+
+          <div class="actions">
+            <button id="assetPlan" class="secondary" type="button">変換計画</button>
+            <button id="assetRun" class="primary" type="button">変換実行</button>
+          </div>
+        </section>
+
+        <section id="postView" class="view">
+          <div class="form-grid">
+            <label class="field wide">
+              <span>投稿入力フォルダ</span>
+              <div class="folder-field">
+                <input id="postInputDir" type="text" />
+                <button class="icon-button" data-folder-target="postInputDir" type="button" title="フォルダを選択">…</button>
+              </div>
+            </label>
+
+            <label class="field">
+              <span>Guild ID</span>
+              <div class="inline-field">
+                <input id="postGuildId" type="text" placeholder=".envを使用" />
+                <button id="checkGuild" class="small-button" type="button">確認</button>
+              </div>
+              <small id="postGuildName" class="field-note">未確認</small>
+            </label>
+
+            <label class="field">
+              <span>Bot Token</span>
+              <input id="postBotToken" type="password" placeholder=".envを使用" autocomplete="off" />
+            </label>
+
+            <label class="field">
+              <span>投稿モード</span>
+              <select id="postUploadMode">
+                <option value="auto">auto</option>
+                <option value="separate">separate</option>
+                <option value="bundle">bundle</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>最大ファイル MiB</span>
+              <input id="postMaxFileMiB" type="number" min="1" step="0.1" value="10" />
+            </label>
+
+            <label class="field">
+              <span>最大リクエスト MiB</span>
+              <input id="postMaxRequestMiB" type="number" min="1" step="0.1" value="25" />
+            </label>
+
+            <label class="field">
+              <span>カテゴリフィルタ</span>
+              <input id="postCategory" type="text" placeholder="任意" />
+            </label>
+
+            <label class="field">
+              <span>処理件数</span>
+              <input id="postLimit" type="number" min="1" placeholder="空なら全件" />
+            </label>
+          </div>
+
+          <div class="switch-grid">
+            <label class="check-row">
+              <input id="postNoRemoteCheck" type="checkbox" />
+              <span>Discord上の既存添付確認を省略</span>
+            </label>
+            <label class="check-row">
+              <input id="postNoRecreateMissing" type="checkbox" />
+              <span>削除済みカテゴリ/チャンネルを作り直さず停止</span>
+            </label>
+          </div>
+
+          <div class="actions">
+            <button id="postPlan" class="secondary" type="button">投稿計画</button>
+            <button id="postRun" class="primary" type="button">投稿実行</button>
+          </div>
+        </section>
+
+        <section class="log-panel">
+          <div class="log-header">
+            <div>
+              <h3>ログ</h3>
+              <span id="jobState">待機中</span>
+            </div>
+            <button id="clearLog" class="ghost" type="button">クリア</button>
+          </div>
+          <pre id="logOutput"></pre>
+        </section>
+      </main>
+    </div>
+
+    <script src="./renderer.js"></script>
+  </body>
+</html>
