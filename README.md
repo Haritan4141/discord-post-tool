@@ -15,7 +15,7 @@ clone直後は依存パッケージが入っていないため、最初にセッ
 Windows PowerShellでは次の手順で起動できます。
 
 ```powershell
-git clone https://github.com/Haritan4141/discord-post-tool.git
+git clone <repository-url>
 cd discord-post-tool
 npm install
 copy .env.example .env
@@ -60,8 +60,8 @@ Windowsではプロジェクト直下の `start-gui.bat` からも起動でき�
 別サーバーごとにプロジェクトフォルダを分けて使えます。
 
 ```txt
-C:\Users\Haritan\Documents\discord-post-tool
-C:\Users\Haritan\Documents\discord-post-tool-rirr
+discord-post-tool-server-a/
+discord-post-tool-server-b/
 ```
 
 GUIの入力内容は、プロジェクトの絶対パスごとに別々に保存されます。そのため、フォルダが違えば前回入力したGuild ID、入力/出力フォルダ、各種オプションは混ざりません。
@@ -69,14 +69,14 @@ GUIの入力内容は、プロジェクトの絶対パスごとに別々に保�
 各プロジェクトフォルダで必要な作業:
 
 ```powershell
-cd C:\Users\Haritan\Documents\discord-post-tool-rirr
+cd path\to\discord-post-tool-server-b
 npm install
 copy .env.example .env
 notepad .env
 npm run app
 ```
 
-既にclone済みの別フォルダへこの仕様を反映する場合は、そのフォルダで次を実行してください。
+既にclone済みの別フォルダへ最新の仕様を反映する場合は、そのフォルダで次を実行してください。
 
 ```powershell
 git pull
@@ -90,20 +90,20 @@ npm install
 ```txt
 example/
   カテゴリ1/
-    akr：ヌルテカ.zip
-    akr：ヌルテカ.pdf
+    作品名.zip
+    作品名.pdf
   カテゴリ2/
-    akr：ノーマル.zip
-    akr：ノーマル.pdf
+    作品名.zip
+    作品名.pdf
 ```
 
 この場合、Discord上では次のようになります。
 
 ```txt
 カテゴリ1
-  # akr-ヌルテカ
+  # 作品名
 カテゴリ2
-  # akr-ノーマル
+  # 作品名
 ```
 
 チャンネル名はDiscord用に自動整形します。空白、`：`、`:` などは `-` に変換します。
