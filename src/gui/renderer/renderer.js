@@ -1,7 +1,9 @@
 const api = window.discordPostTool;
+const BASE_STORAGE_KEY = "discordPostToolState";
 
 const state = {
   activeTab: "assets",
+  localStateKey: BASE_STORAGE_KEY,
   running: false,
 };
 
@@ -106,6 +108,7 @@ function bindEvents() {
 
 async function hydrateDefaults() {
   const defaults = await api.getDefaults();
+  state.localStateKey = makeProjectStateKey(defaults.rootDir);
   elements.assetInputDir.value ||= defaults.rawImagesDir;
   elements.assetOutputDir.value ||= defaults.optimizedDir;
   elements.postInputDir.value ||= defaults.optimizedDir;
@@ -281,6 +284,14 @@ function valueOrEmpty(value) {
   return text === "" ? "" : text;
 }
 
+function makeProjectStateKey(rootDir) {
+  const normalizedRoot = String(rootDir || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .toLowerCase();
+  return normalizedRoot ? `${BASE_STORAGE_KEY}:${normalizedRoot}` : BASE_STORAGE_KEY;
+}
+
 function saveLocalState() {
   const data = {};
   document.querySelectorAll("input, select").forEach((input) => {
@@ -290,11 +301,11 @@ function saveLocalState() {
     data[input.id] = input.type === "checkbox" ? input.checked : input.value;
   });
   data.activeTab = state.activeTab;
-  localStorage.setItem("discordPostToolState", JSON.stringify(data));
+  localStorage.setItem(state.localStateKey, JSON.stringify(data));
 }
 
 function restoreLocalState() {
-  const raw = localStorage.getItem("discordPostToolState");
+  const raw = localStorage.getItem(state.localStateKey);
   if (!raw) {
     return;
   }

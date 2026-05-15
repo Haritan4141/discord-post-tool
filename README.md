@@ -55,6 +55,34 @@ Windowsではプロジェクト直下の `start-gui.bat` からも起動でき�
 
 `.env` の `DISCORD_BOT_TOKEN` と `DISCORD_GUILD_ID` はGUIからも利用されます。GUIのBot Token欄は一時指定用で、入力内容は保存しません。Guild ID欄の「確認」ボタンで、Botが参加しているサーバー名を取得できます。
 
+## 複数プロジェクトで使う場合
+
+別サーバーごとにプロジェクトフォルダを分けて使えます。
+
+```txt
+C:\Users\Haritan\Documents\discord-post-tool
+C:\Users\Haritan\Documents\discord-post-tool-rirr
+```
+
+GUIの入力内容は、プロジェクトの絶対パスごとに別々に保存されます。そのため、フォルダが違えば前回入力したGuild ID、入力/出力フォルダ、各種オプションは混ざりません。
+
+各プロジェクトフォルダで必要な作業:
+
+```powershell
+cd C:\Users\Haritan\Documents\discord-post-tool-rirr
+npm install
+copy .env.example .env
+notepad .env
+npm run app
+```
+
+既にclone済みの別フォルダへこの仕様を反映する場合は、そのフォルダで次を実行してください。
+
+```powershell
+git pull
+npm install
+```
+
 ## 入力フォルダ
 
 カテゴリ名のフォルダを作り、その直下に同じベース名の `.zip` / `.pdf` を置きます。
