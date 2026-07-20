@@ -91,6 +91,8 @@ async function main() {
     throw new Error("No image sets found.");
   }
 
+  await validateInputImages(selectedSets, concurrency);
+
   for (const set of selectedSets) {
     await buildSet(set, {
       outputDir,
@@ -371,7 +373,7 @@ async function findOptimizedImages(label, files, options) {
 }
 
 async function buildLongEdgeCandidates(files, options) {
-  const metadata = await sharp(files[0]).metadata();
+  const metadata = await readImageMetadata(files[0]);
   const sourceLongEdge = Math.max(metadata.width || options.maxLongEdge, metadata.height || options.maxLongEdge);
   const start = Math.min(options.maxLongEdge, sourceLongEdge);
   const baseCandidates = [
@@ -397,36 +399,99 @@ async function renderImages(files, options) {
     longEdge: options.longEdge,
     quality: options.quality,
     images: await mapWithConcurrency(files, options.concurrency, async (file) => {
-    const outputName = `${path.basename(file, path.extname(file))}.jpg`;
-    let pipeline = sharp(file, { limitInputPixels: false })
-      .rotate()
-      .flatten({ background: { r: 255, g: 255, b: 255 } });
+      const outputName = `${path.basename(file, path.extname(file))}.jpg`;
 
-    if (options.longEdge !== null) {
-      pipeline = pipeline.resize({
-        width: options.longEdge,
-        height: options.longEdge,
-        fit: "inside",
-        withoutEnlargement: true,
-      });
-    }
+      try {
+        let pipeline = sharp(file, { limitInputPixels: false })
+          .rotate()
+          .flatten({ background: { r: 255, g: 255, b: 255 } });
 
-    const buffer = await pipeline
-      .jpeg({
-        quality: options.quality,
-        mozjpeg: true,
-        progressive: true,
-        chromaSubsampling: "4:2:0",
-      })
-      .toBuffer();
+        if (options.longEdge !== null) {
+          pipeline = pipeline.resize({
+            width: options.longEdge,
+            height: options.longEdge,
+            fit: "inside",
+            withoutEnlargement: true,
+          });
+        }
 
-      return {
-      source: file,
-      name: outputName,
-      buffer,
-      };
+        const buffer = await pipeline
+          .jpeg({
+            quality: options.quality,
+            mozjpeg: true,
+            progressive: true,
+            chromaSubsampling: "4:2:0",
+          })
+          .toBuffer();
+
+        return {
+          source: file,
+          name: outputName,
+          buffer,
+        };
+      } catch (error) {
+        throw createImageReadError(file, error);
+      }
     }),
   };
+}
+
+async function validateInputImages(sets, concurrency) {
+  const files = Array.from(new Set(sets.flatMap((set) => set.files)));
+  console.log("");
+  console.log(`Validating ${files.length} input image(s)...`);
+
+  const results = await mapWithConcurrency(files, concurrency, async (file) => {
+    try {
+      const stat = await fs.stat(file);
+      if (stat.size === 0) {
+        throw new Error("The file is empty.");
+      }
+
+      const metadata = await sharp(file, { limitInputPixels: false }).metadata();
+      if (!metadata.format || !metadata.width || !metadata.height) {
+        throw new Error("Image dimensions or format could not be detected.");
+      }
+      return null;
+    } catch (error) {
+      return {
+        file,
+        message: getErrorMessage(error),
+      };
+    }
+  });
+
+  const invalidFiles = results.filter(Boolean);
+  if (invalidFiles.length === 0) {
+    console.log("Input image validation passed.");
+    return;
+  }
+
+  const details = invalidFiles.flatMap(({ file, message }) => [`- ${file}`, `  ${message}`]);
+  throw new Error(
+    [
+      `読み込めない入力画像が ${invalidFiles.length} 件あります。`,
+      ...details,
+      "画像が破損しているか、拡張子と実際の形式が一致していません。",
+      "該当画像を元データから再コピーまたは再出力して、もう一度実行してください。",
+    ].join("\n")
+  );
+}
+
+async function readImageMetadata(file) {
+  try {
+    return await sharp(file, { limitInputPixels: false }).metadata();
+  } catch (error) {
+    throw createImageReadError(file, error);
+  }
+}
+
+function createImageReadError(file, error) {
+  return new Error(`画像を読み込めません: ${file}\n${getErrorMessage(error)}`);
+}
+
+function getErrorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function mapWithConcurrency(items, concurrency, worker) {
