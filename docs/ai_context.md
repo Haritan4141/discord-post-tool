@@ -13,7 +13,7 @@
 
 - Node.js 20以上
 - Discord REST API v10を直接利用
-- `sharp`: 画像変換/JPEG圧縮
+- `sharp`: ZIP用WebP変換、PDF用JPEG変換
 - `pdf-lib`: PDF生成
 - `yazl`: ZIP生成
 - PowerShell環境での実行を前提に検証
@@ -21,10 +21,10 @@
 主なコマンド:
 
 ```bash
-npm run plan -- --input ./optimized_split
-npm run run -- --input ./optimized_split --yes
-npm run build-assets -- plan --input ./raw_images --output ./optimized_split --chunk-size 50 --preserve-resolution
-npm run build-assets -- run --input ./raw_images --output ./optimized_split --chunk-size 50 --preserve-resolution --force
+npm run plan -- --input ./optimized_webp_pdf
+npm run run -- --input ./optimized_webp_pdf --yes
+npm run build-assets -- plan --input ./raw_images --output ./optimized_webp_pdf --chunk-size 100
+npm run build-assets -- run --input ./raw_images --output ./optimized_webp_pdf --chunk-size 100 --force
 ```
 
 環境変数:
@@ -47,8 +47,8 @@ GitHubリポジトリ:
 達成したい状態:
 
 - `raw_images` から10MiB未満のzip/pdfを生成できる。
-- `optimized_split` を投稿入力として、カテゴリ/チャンネル作成とファイル投稿ができる。
-- 範囲分割されたファイルを同一作品チャンネルへまとめて投稿できる。
+- `optimized_webp_pdf` を投稿入力として、カテゴリ/チャンネル作成とファイル投稿ができる。
+- 100枚を分割せず、1作品につき1 zip＋1 pdfを投稿できる。
 - 投稿済みファイルは再実行時にスキップできる。
 - Discord側でカテゴリ/チャンネルが削除されていた場合は、入力フォルダを正として作り直せる。
 - GUIから実行しても、CLI仕様と制約が失われない。
@@ -109,12 +109,15 @@ GUIはElectronデスクトップアプリとして実装開始済みです。起
 - `raw_images` 内の画像セットを検出。
 - `raw_images/カテゴリ/作品名_png/*.png` のような投稿カテゴリに近い入力構成に対応。
 - `*_png` と `*_jpg` が両方ある場合は、再圧縮劣化を避けるためPNGを優先。
-- `--chunk-size 50` で50枚単位に分割。
-- 99枚、100枚、101枚などにも対応。最後の余りが小さい場合は直前の分割に吸収。
-- `--preserve-resolution` で解像度を維持し、JPEG品質だけを調整。
+- 既定の`--chunk-size 100`で100枚を1組として処理。
+- ZIP内画像は元解像度WebP。品質75を基準に、余裕があれば85まで引き上げ、超過時は70まで自動探索。
+- PDF内画像は長辺1350px・JPEG品質70を基準に、余裕があれば長辺1600px・品質75まで同時に段階的に引き上げ、超過時は長辺900pxまで縮小。
+- ZIPとPDFを独立した画像バッファから生成し、それぞれ完成サイズを検査。
+- 出力時に`<作品名>.assets.json`へプロファイル、採用品質、採用長辺、完成サイズを保存。旧JPEG ZIPを完成済みと誤認しないためにも使用。
+- GUIと変換CLIの既定出力先は`optimized_webp_pdf`。GUI保存スキーマv3への移行時、旧`optimized_split`の絶対パスも出力先・投稿入力先から新既定値へ置き換えて保存する。
+- 選択した出力先に同一作品の旧範囲付きファイルがある場合、自動削除せずエラー停止する。
+- ZIP/PDF/profileは一時ファイルへ書いてから確定し、profileへ各出力のSHA-256を記録。再利用時は入力署名、設定、サイズ、ハッシュを照合する。
 - デフォルトの生成目標を `9.8MiB` に設定。
-- デフォルトのJPEG品質探索上限を `95` に設定。
-- `--quality <n>` を追加し、品質固定の高速モードを実装。
 - `--concurrency <n>` を追加し、画像変換を並列化。デフォルトは4。
 
 GUIで実装した内容:
@@ -123,9 +126,9 @@ GUIで実装した内容:
 - `npm run app` で起動。
 - `npm run app:smoke` で短時間起動スモークテスト。
 - `src/gui/main.js` から既存CLIを子プロセス起動。
-- 画像変換タブで入力/出力フォルダ、分割枚数、目標サイズ、品質探索/固定品質、並列数、上書き有無を指定可能。
-- 画像変換タブの「固定品質」は、「品質固定で高速化する」がオンの時だけ入力可能。オフの場合は自動探索モードで、最低品質/最高品質を使う。
-- 「zip/pdf用JPGも保存する」は、zip/pdf作成に使った中間JPEGを `<作品名>_jpg` フォルダへ保存する確認用オプション。通常投稿には不要。
+- 画像変換タブで入力/出力フォルダ、1組の最大枚数、目標サイズ、ZIP WebP最低/基準/上限品質、PDF JPEG基準/上限品質、PDF最低/基準/上限長辺、並列数、上書き有無を指定可能。
+- 画像変換タブの既定値は100枚、9.8MiB、WebP 70/75/85、JPEG品質70/75、PDF長辺900/1350/1600px。
+- 「PDF用JPGも保存する」は、PDFに埋め込んだ中間JPEGを `<作品名>_jpg` フォルダへ保存する確認用オプション。通常投稿には不要。
 - Discord投稿タブで投稿入力フォルダ、Guild ID、Bot Token一時入力、投稿モード、サイズ上限、カテゴリ/件数フィルタを指定可能。
 - ログ欄はアプリ全体を縦に伸ばさず、ログ本文だけがスクロールするCSSに調整済み。
 - 起動時ウィンドウは `1280x900`、最小サイズは `1040x760`。メニューバーは自動非表示。フォーム余白を詰め、ログ欄に最低190px相当の表示領域を確保。
@@ -143,15 +146,15 @@ GUIで実装した内容:
 
 - Discord Botには通常ユーザーのNitroアップロード上限は適用されない。
 - Bot投稿ではサーバー側の制限に影響されるため、複数サーバー運用ではファイルを10MiB未満に抑える方針が現実的。
-- JPGをZIP圧縮しても大きくは縮まらないため、10MiB未満に収めるにはJPEG品質調整が主な手段になる。
-- 50枚ずつに分けると、解像度を維持したまま品質を高く保ちやすい。
+- 100枚の元解像度1248×1824画像はWebP品質75で9.6935MiBのZIPになり、品質76では10MiBを超える実測結果だった。
+- PDFは元解像度のままJPEG品質を大きく下げるより、長辺1350px・品質70のほうが表示上のバランスが良く、最大級100枚で9.5630MiBだった。
 
 採用した方針:
 
 - 入力フォルダ構成を正とする。
 - Discord側に存在しないカテゴリ/チャンネルは作り直す。
 - 再実行可能性を重視し、manifestを使って作成済み/投稿済みを管理する。
-- 画像変換は「自動探索」と「品質固定」の2モードを持つ。
+- 画像変換は「ZIP＝元解像度WebP」「PDF＝縮小JPEG」の固定方針とし、各ファイルの実サイズを見ながら9.8MiB以内で品質を上げ、重いセットでは基準以下へ戻す。
 - CLIで固めた動作をGUIから安全に呼び出す。
 
 ## 未完了タスク
@@ -168,22 +171,22 @@ GUIで実装した内容:
 
 次に確認すべきこと:
 
-- `npm run run -- --input ./optimized_split --yes` で、現在のユーザー環境でも投稿済みスキップと削除済み再作成が期待通りに動くか。
-- `npm run build-assets -- run --input ./raw_images --output ./optimized_split --chunk-size 50 --preserve-resolution --force` の全体実行で、全ファイルが9.8MiB以下になるか。
-- 品質固定モード `--quality 89` が実データ全体で安定して9.8MiB以下に収まるか。データによっては超過する可能性がある。
+- `npm run run -- --input ./optimized_webp_pdf --yes` で、現在のユーザー環境でも投稿済みスキップと削除済み再作成が期待通りに動くか。
+- `npm run build-assets -- run --input ./raw_images --output ./optimized_webp_pdf --chunk-size 100 --force` の全体実行で、全ファイルが9.8MiB以下になるか。
+- WebP品質70でも超過する例や、PDF長辺900pxでも超過する例がないか。
 
 保留中の判断:
 
 - GUI技術スタックはElectronを採用。
 - GUIのBot Token入力は保存しない方針。基本は `.env` を使う。
-- 変換済み出力フォルダはGUIで選択可能。デフォルトは `optimized_split`。
+- 変換済み出力フォルダはGUIで選択可能。新方式のデフォルトは `optimized_webp_pdf`。
 
 既知の問題や注意:
 
 - `.discord-post-tool-manifest.json` はローカル状態を保持する。Discord側で手動削除や重複作成を繰り返すと、manifestとDiscord側の状態がずれる可能性がある。
 - 投稿済み判定はmanifest中心。Discord側で投稿メッセージだけ削除した場合、manifestが投稿済みと判断してスキップする可能性がある。必要ならmanifest削除/編集や再検出機能を検討する。
 - 同名カテゴリ/同名チャンネルが複数ある場合、意図しない対象を避けるため停止または明示的な解決が必要。
-- 画像変換の自動探索は遅い。品質固定は速いが、サイズ超過時はエラーになる。
+- 自動探索では候補ごとに100枚を再変換するため、旧固定基準より処理時間が増える。WebPは基準75を最初に試してから上限85側または最低70側を二分探索し、PDFは1600px/q75から1350px/q70までバランスよく下げ、その後900pxまで縮小する。
 
 ## 動作確認・検証状況
 
@@ -197,30 +200,28 @@ node --check src/gui/main.js
 node --check src/gui/preload.js
 node --check src/gui/renderer/renderer.js
 npm run app:smoke
-npm run plan -- --input ./example
-npm run plan -- --input ./optimized_split
-npm run build-assets -- plan --input ./raw_images --output ./optimized_split --chunk-size 50 --preserve-resolution
-npm run build-assets -- run --input ./raw_images --output ./optimized_split --chunk-size 50 --preserve-resolution --force
-npm run build-assets -- run --input ./raw_images --output ./tmp/quality-test --chunk-size 50 --preserve-resolution --limit 1 --force
-npm run build-assets -- run --input ./raw_images --output ./tmp/quality-fixed-90 --chunk-size 50 --preserve-resolution --limit 1 --quality 90 --force
+npm run plan -- --input ./optimized_webp_pdf
+npm test
+npm run build-assets -- plan --input ./raw_images --chunk-size 100
+npm run build-assets -- run --input ./raw_images --output ./optimized_webp_pdf --set <現行最大セット> --chunk-size 100 --force
+npm run build-assets -- run --input ./_8月ランダムえすえー --output ./tmp/profile-v3-heavy-regression --set <保管データ最大セット> --chunk-size 100 --force
 ```
 
 確認できたこと:
 
-- `example` はカテゴリ/チャンネル/zip/pdfペアとして読み取れる。
 - `optimized_split` は範囲付きファイルを同一チャンネルへまとめて読み取れる。
 - `raw_images` はカテゴリ配下の作品フォルダを検出できる。
-- 50枚ずつ分割し、zip/pdfを生成できる。
-- 100枚は `1-50` / `51-100` へ分割される。
-- 99枚は `1-50` / `51-99`、101枚は `1-50` / `51-101` のように処理される設計を確認済み。
-- 以前のテストデータでは、解像度維持かつ品質82で約6.4から6.9MiB程度になった。
-- `target 9.8MiB / max-quality 95` に変更後、1作品テストで品質89まで上がった。
-- 品質90固定では一部ファイルが約10.12MiBになり、9.8MiB上限を超えてエラー停止することを確認。
+- 最大級100枚は範囲名なしの1 zip＋1 pdfとして生成される。
+- ZIPは100件すべて`.webp`で、1248×1824の元解像度を維持。品質75で10,164,390 bytes（9.6935MiB）。
+- PDFは100ページ、各ページ924×1350。JPEG品質70で10,027,539 bytes（約9.5630MiB）。
+- 投稿CLIは上記を1チャンネル・2添付・合計約19.3MiBとして認識し、10MiB/25MiBの事前検査を通過。
+- `npm test`で軽いデータがWebP q85・PDF 1600px/q75へ上がることと、重い疑似データでWebPが基準q75未満へ戻ることを自動確認。
+- 現行テスト最大セット（100枚、元225.13MiB）はWebP q81で9.39MiB、PDF 1504px/q73で9.32MiB。
+- 保管データ最大セット（100枚、元235.12MiB）はWebP q83で9.61MiB、PDF 1552px/q74で9.47MiB。
 - Discord投稿はカテゴリ作成、チャンネル作成、ファイル投稿まで動作した。
 - 投稿本文なしの添付のみ投稿へ変更済み。
 - Electronアプリの短時間起動スモークテストが成功した。
 - Guild ID確認機能追加後も `node --check` と `npm run app:smoke` は成功。
-- 固定品質欄のチェック連動変更後も `node --check src/gui/renderer/renderer.js` と `npm run app:smoke` は成功。
 - `npm run app:smoke` 実行時、GUIが既に開いている場合はElectronのキャッシュ作成警告がstderrに出ることがあるが、終了コードは0。
 - ログ欄スクロールCSS変更後も `npm run app:smoke` は成功。
 - ウィンドウサイズ拡大とUI余白調整後も `node --check src/gui/main.js` と `npm run app:smoke` は成功。
@@ -231,7 +232,7 @@ npm run build-assets -- run --input ./raw_images --output ./tmp/quality-fixed-90
 
 - GUI上での実操作。
 - GUIのGuild ID確認ボタンによる実サーバー名取得。
-- すべての実データで品質固定 `--quality 89` が安全かどうか。
+- すべての現行実データを新プロファイルで一括生成した場合に、WebP品質70またはPDF長辺900pxまで下げても超過する作品がないか。
 - 大量サーバー/大量カテゴリでのDiscordレート制限の実運用安定性。
 - manifestとDiscord側の状態が大きくずれた場合のGUIでの復旧操作。
 
@@ -260,7 +261,8 @@ npm run build-assets -- run --input ./raw_images --output ./tmp/quality-fixed-90
 - `.env`: 実トークンを含むローカル設定。内容を外部に出さない。
 - `.discord-post-tool-manifest.json`: Discord作成済み/投稿済み状態。ローカル状態ファイル。
 - `raw_images/`: 画像変換前の入力。カテゴリ/作品フォルダ構成。
-- `optimized_split/`: 変換後の投稿入力。
+- `optimized_webp_pdf/`: 現行の非分割変換出力・投稿入力。
+- `optimized_split/`: 旧50枚分割方式の生成済み出力。ユーザーデータとして保持し、新出力と混在させない。
 - `example/`: 初期検証用のzip/pdf入力。
 - `tmp/`: 検証用一時出力。
 
@@ -280,18 +282,17 @@ raw_images/
       001.png
 ```
 
-想定する `optimized_split` 構成:
+想定する `optimized_webp_pdf` 構成:
 
 ```txt
-optimized_split/
+optimized_webp_pdf/
   カテゴリ1/
-    作品名_1-50.zip
-    作品名_1-50.pdf
-    作品名_51-100.zip
-    作品名_51-100.pdf
+    作品名.zip
+    作品名.pdf
+    作品名.assets.json
 ```
 
-投稿CLIの範囲ファイル判定:
+投稿CLIは後方互換として旧出力の範囲ファイルも判定する:
 
 - `<作品名>_<開始番号>-<終了番号>.zip`
 - `<作品名>_<開始番号>-<終了番号>.pdf`
@@ -313,7 +314,7 @@ optimized_split/
 - 自分が変更していない差分を勝手に修正・削除しないこと。
 - `.env` のBot Tokenを出力しないこと。
 - `.discord-post-tool-manifest.json` はローカル状態として重要。削除や大幅編集はユーザー確認なしに行わないこと。
-- `raw_images` と `optimized_split` はユーザーデータを含む可能性がある。勝手に削除しないこと。
+- `raw_images`、`optimized_webp_pdf`、`optimized_split` はユーザーデータを含む可能性がある。勝手に削除しないこと。
 - 画像変換で `--force` を使うと既存出力を上書きする。実行前に入力/出力フォルダを確認すること。
 - Discord APIのレート制限を考慮すること。大量投稿時は急がせすぎない。
 - 不明点がある場合は推測で大きく進めず、必要に応じて確認すること。
@@ -368,3 +369,5 @@ Git操作を提案する場合は、実行内容とリスクを説明するこ�
 - 2026-05-16: GUIの入力内容保存をプロジェクト絶対パスごとに分離。別サーバー用にフォルダを分けた場合、前回別プロジェクトの入力内容が残らないように変更。
 - 2026-05-16: READMEからユーザー名、ローカルパス、実データ由来の固有名詞を除去。複数プロジェクト運用の説明は汎用例に置き換えて維持。
 - 2026-07-21: 画像変換前の入力画像検査を追加。破損画像や形式不一致がある場合、該当ファイルのパスと理由をGUI/CLIログへ表示して、出力生成前に停止するよう変更。変換中の読み取りエラーにもファイルパスを付与し、READMEへ対処方法を追記。
+- 2026-08-23: 100枚を分割しない新プロファイルへ変更。ZIPは元解像度WebP品質75～70、PDFはJPEG品質70・長辺1350～900pxとして独立生成・判定する。GUI既定値、CLI引数、README、出力プロファイル、Node組み込みテストを更新。最大級100枚でZIP 9.6935MiB、PDF約9.5630MiB、投稿事前検査成功を確認。
+- 2026-08-23: 出力プロファイルv3へ更新。出力先を`optimized_webp_pdf`へ統一し、GUIの旧保存パスも移行。WebPはq75基準・q70～85、PDFは1350px/q70基準・900～1600px/q70～75として、9.8MiB以内で上方向・下方向へ自動探索する。現行100枚最大セットと保管データ100枚最大セットで各1 ZIP＋1 PDF、いずれも9.8MiB以内を確認。

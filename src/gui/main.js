@@ -66,7 +66,7 @@ function registerIpc() {
     return {
       rootDir: ROOT_DIR,
       rawImagesDir: path.join(ROOT_DIR, "raw_images"),
-      optimizedDir: path.join(ROOT_DIR, "optimized_split"),
+      optimizedDir: path.join(ROOT_DIR, "optimized_webp_pdf"),
       hasBotToken: Boolean(env.DISCORD_BOT_TOKEN || process.env.DISCORD_BOT_TOKEN),
       guildId: env.DISCORD_GUILD_ID || process.env.DISCORD_GUILD_ID || "",
     };
@@ -132,25 +132,24 @@ function buildAssetsJob(request) {
   pushOption(args, "--output", request.outputDir);
   pushOption(args, "--chunk-size", request.chunkSize);
   pushOption(args, "--target-mib", request.targetMiB);
-  pushOption(args, "--max-quality", request.maxQuality);
-  pushOption(args, "--min-quality", request.minQuality);
+  pushOption(args, "--zip-webp-quality", request.zipWebpQuality);
+  pushOption(args, "--zip-webp-max-quality", request.zipWebpMaxQuality);
+  pushOption(args, "--zip-webp-min-quality", request.zipWebpMinQuality);
+  pushOption(args, "--pdf-jpeg-quality", request.pdfJpegQuality);
+  pushOption(args, "--pdf-jpeg-max-quality", request.pdfJpegMaxQuality);
+  pushOption(args, "--pdf-long-edge", request.pdfLongEdge);
+  pushOption(args, "--pdf-max-long-edge", request.pdfMaxLongEdge);
+  pushOption(args, "--pdf-min-long-edge", request.pdfMinLongEdge);
   pushOption(args, "--concurrency", request.concurrency);
   pushOption(args, "--limit", request.limit);
   pushOption(args, "--set", request.setName);
 
-  if (request.preserveResolution) {
-    args.push("--preserve-resolution");
-  }
   if (request.force) {
     args.push("--force");
   }
   if (request.keepJpgs) {
     args.push("--keep-jpgs");
   }
-  if (request.fixedQualityEnabled) {
-    pushOption(args, "--quality", request.fixedQuality);
-  }
-
   return {
     label: command === "run" ? "画像変換" : "画像変換計画",
     args,

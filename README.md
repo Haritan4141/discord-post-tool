@@ -51,7 +51,7 @@ Windowsではプロジェクト直下の `start-gui.bat` からも起動でき�
 画面には次の2つの機能があります。
 
 - 画像変換: `raw_images` から10MiB未満のzip/pdfを生成
-- Discord投稿: `optimized_split` のカテゴリ/ファイル構成をDiscordへ投稿
+- Discord投稿: `optimized_webp_pdf` のカテゴリ/ファイル構成をDiscordへ投稿
 
 `.env` の `DISCORD_BOT_TOKEN` と `DISCORD_GUILD_ID` はGUIからも利用されます。GUIのBot Token欄は一時指定用で、入力内容は保存しません。Guild ID欄の「確認」ボタンで、Botが参加しているサーバー名を取得できます。
 
@@ -220,68 +220,75 @@ npm run build-assets -- plan --input ./raw_images
 生成します。
 
 ```bash
-npm run build-assets -- run --input ./raw_images --output ./optimized
+npm run build-assets -- run --input ./raw_images --output ./optimized_webp_pdf
 ```
 
 出力は投稿CLIが読める形になります。
 
 ```txt
-optimized/
+optimized_webp_pdf/
   カテゴリ1/
     作品名.zip
     作品名.pdf
+    作品名.assets.json
 ```
 
 生成後はそのまま投稿確認できます。
 
 ```bash
-npm run plan -- --input ./optimized
+npm run plan -- --input ./optimized_webp_pdf
 ```
 
-標準では各zip/pdfが `9.8MiB` 以下になるように、JPEG品質と長辺サイズを自動調整します。JPEG品質は最大95まで試します。
+標準プロファイルは、100枚を分割せず次の2形式を独立して生成します。
+
+- zip: 元解像度のWebP。品質75を基準に、余裕があれば85まで引き上げ、超過時は70まで自動調整
+- pdf: 長辺1350px・JPEG品質70を基準に、余裕があれば長辺1600px・品質75までバランスよく引き上げ、超過時は長辺900pxまで段階的に縮小
+
+`作品名.assets.json` は、実際に採用した品質・解像度・完成サイズを記録するプロファイルです。投稿CLIはこのファイルを添付しません。
+
+GUIと変換CLIの既定出力先は `optimized_webp_pdf` です。GUIの旧保存設定が `optimized_split` の場合は、新しいプロファイルへの更新時に出力先・投稿入力先を自動移行します。旧50枚分割ファイルと混在すると重複投稿につながるため、古い範囲付き出力を検出した場合は削除せず安全停止します。
 
 ```bash
-npm run build-assets -- run --input ./raw_images --min-long-edge 1100 --force
+npm run build-assets -- run --input ./raw_images --output ./optimized_webp_pdf --chunk-size 100 --force
 ```
 
-解像度を落とさず、50枚ずつに分けてJPEG品質だけで圧縮する場合は次のようにします。
+基準値を明示する場合は次のようにします。
 
 ```bash
-npm run build-assets -- run --input ./raw_images --output ./optimized_split --chunk-size 50 --preserve-resolution --force
+npm run build-assets -- run --input ./raw_images --output ./optimized_webp_pdf \
+  --chunk-size 100 \
+  --zip-webp-quality 75 \
+  --zip-webp-max-quality 85 \
+  --zip-webp-min-quality 70 \
+  --pdf-jpeg-quality 70 \
+  --pdf-jpeg-max-quality 75 \
+  --pdf-long-edge 1350 \
+  --pdf-max-long-edge 1600 \
+  --pdf-min-long-edge 900 \
+  --force
 ```
 
-変換を速くしたい場合は、品質を固定できます。サイズ上限に収まる品質がわかっている時向けです。
+GUIにも同じ既定値が入っています。zipとpdfは完成後の実サイズを別々に検査し、どちらかが目標を超える場合は出力を確定せず停止します。
 
-```bash
-npm run build-assets -- run --input ./raw_images --output ./optimized_split --chunk-size 50 --preserve-resolution --quality 89 --force
-```
-
-`--quality` を指定しない場合は、各分割ごとに10MiB未満へ収まる最大品質を探索します。探索は同じ画像を複数回変換するため遅くなります。
-
-GUIでは「品質固定で高速化する」にチェックを入れた時だけ「固定品質」欄が有効になります。未チェック時は「最低品質」から「最高品質」の範囲で自動探索します。
-
-「zip/pdf用JPGも保存する」は、zip/pdfの中に入れるために生成した変換後JPEGを、確認用として `<作品名>_jpg` フォルダにも保存するオプションです。投稿に必要なのはzip/pdfだけなので、通常はオフで問題ありません。
+「PDF用JPGも保存する」は、PDFへ埋め込んだ変換後JPEGを確認用として `<作品名>_jpg` フォルダにも保存するオプションです。zip内のWebPと投稿用zip/pdfだけが必要なら、通常はオフで問題ありません。
 
 出力は次のようになります。
 
 ```txt
-optimized_split/
+optimized_webp_pdf/
   カテゴリ1/
-    作品名_1-50.zip
-    作品名_1-50.pdf
-    作品名_51-100.zip
-    作品名_51-100.pdf
+    作品名.zip
+    作品名.pdf
+    作品名.assets.json
 ```
 
 そのまま投稿確認できます。
 
 ```bash
-npm run plan -- --input ./optimized_split
+npm run plan -- --input ./optimized_webp_pdf
 ```
 
-`_1-50` や `_51-100` のような範囲付きファイルは、投稿CLI側で同じ作品名のチャンネルにまとめます。上の例では `作品名` という1チャンネルに4ファイルを投稿します。
-
-画像枚数が99枚や101枚のように少しずれても対応します。`--chunk-size 50` の場合、99枚は `1-50` / `51-99`、101枚は `1-50` / `51-101` になります。最後の余りが小さい場合は直前の分割にまとめます。
+100枚以下なら範囲付きの名前にならず、1 zip＋1 pdfとして投稿されます。100枚を超えるセットだけ、`--chunk-size`に従って範囲付きファイルへ分けられます。最後の余りが10%以下の場合は直前の組へまとめます。
 
 ### `Input file contains unsupported image format` で停止する場合
 

@@ -44,7 +44,7 @@
         <section class="toolbar">
           <div>
             <h2 id="viewTitle">画像変換</h2>
-            <p id="viewSubtitle">raw_images から Discord 投稿用の zip/pdf を生成します。</p>
+            <p id="viewSubtitle">ZIPは元解像度WebP、PDFは縮小JPEGで生成します。</p>
           </div>
           <button id="stopJob" class="ghost danger" type="button" disabled>停止</button>
         </section>
@@ -68,8 +68,8 @@
             </label>
 
             <label class="field">
-              <span>分割枚数</span>
-              <input id="assetChunkSize" type="number" min="1" value="50" />
+              <span>1組あたりの最大枚数</span>
+              <input id="assetChunkSize" type="number" min="1" value="100" />
             </label>
 
             <label class="field">
@@ -78,18 +78,43 @@
             </label>
 
             <label class="field">
-              <span>最低品質</span>
-              <input id="assetMinQuality" type="number" min="1" max="100" value="42" />
+              <span>ZIP WebP 基準品質</span>
+              <input id="assetZipWebpQuality" type="number" min="1" max="100" value="75" />
             </label>
 
             <label class="field">
-              <span>最高品質</span>
-              <input id="assetMaxQuality" type="number" min="1" max="100" value="95" />
+              <span>ZIP WebP 上限品質</span>
+              <input id="assetZipWebpMaxQuality" type="number" min="1" max="100" value="85" />
             </label>
 
             <label class="field">
-              <span>固定品質</span>
-              <input id="assetFixedQuality" type="number" min="1" max="100" value="89" disabled />
+              <span>ZIP WebP 最低品質</span>
+              <input id="assetZipWebpMinQuality" type="number" min="1" max="100" value="70" />
+            </label>
+
+            <label class="field">
+              <span>PDF JPEG 基準品質</span>
+              <input id="assetPdfJpegQuality" type="number" min="1" max="100" value="70" />
+            </label>
+
+            <label class="field">
+              <span>PDF JPEG 上限品質</span>
+              <input id="assetPdfJpegMaxQuality" type="number" min="1" max="100" value="75" />
+            </label>
+
+            <label class="field">
+              <span>PDF 基準長辺 px</span>
+              <input id="assetPdfLongEdge" type="number" min="1" value="1350" />
+            </label>
+
+            <label class="field">
+              <span>PDF 上限長辺 px</span>
+              <input id="assetPdfMaxLongEdge" type="number" min="1" value="1600" />
+            </label>
+
+            <label class="field">
+              <span>PDF 最低長辺 px</span>
+              <input id="assetPdfMinLongEdge" type="number" min="1" value="900" />
             </label>
 
             <label class="field">
@@ -110,20 +135,12 @@
 
           <div class="switch-grid">
             <label class="check-row">
-              <input id="assetPreserveResolution" type="checkbox" checked />
-              <span>解像度を維持する</span>
-            </label>
-            <label class="check-row">
-              <input id="assetFixedQualityEnabled" type="checkbox" />
-              <span>品質固定で高速化する</span>
-            </label>
-            <label class="check-row">
               <input id="assetForce" type="checkbox" checked />
               <span>既存出力を上書きする</span>
             </label>
             <label class="check-row">
               <input id="assetKeepJpgs" type="checkbox" />
-              <span>zip/pdf用JPGも保存する</span>
+              <span>PDF用JPGも保存する</span>
             </label>
           </div>
 

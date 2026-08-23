@@ -2,6 +2,7 @@
 
 const fs = require("node:fs/promises");
 const fsSync = require("node:fs");
+const crypto = require("node:crypto");
 const path = require("node:path");
 const sharp = require("sharp");
 const yazl = require("yazl");
@@ -14,6 +15,16 @@ const SOURCE_RANK = {
   jpeg: 2,
   webp: 1,
 };
+const ASSET_PROFILE_VERSION = 3;
+const DEFAULT_CHUNK_SIZE = 100;
+const DEFAULT_ZIP_WEBP_QUALITY = 75;
+const DEFAULT_ZIP_WEBP_MAX_QUALITY = 85;
+const DEFAULT_ZIP_WEBP_MIN_QUALITY = 70;
+const DEFAULT_PDF_JPEG_QUALITY = 70;
+const DEFAULT_PDF_JPEG_MAX_QUALITY = 75;
+const DEFAULT_PDF_LONG_EDGE = 1350;
+const DEFAULT_PDF_MAX_LONG_EDGE = 1600;
+const DEFAULT_PDF_MIN_LONG_EDGE = 900;
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -29,35 +40,79 @@ async function main() {
   }
 
   const inputDir = path.resolve(process.cwd(), String(args.input || "./raw_images"));
-  const outputDir = path.resolve(process.cwd(), String(args.output || "./optimized"));
+  const outputDir = path.resolve(
+    process.cwd(),
+    String(args.output || "./optimized_webp_pdf")
+  );
   const categoryName = String(args.category || "カテゴリ1");
   const targetMiB = readNumberArg(args, "target-mib", 9.8);
-  const maxLongEdge = readIntegerArg(args, "max-long-edge", 1600);
-  const minLongEdge = readIntegerArg(args, "min-long-edge", 900);
-  const maxQuality = readIntegerArg(args, "max-quality", 95);
-  const minQuality = readIntegerArg(args, "min-quality", 42);
-  const fixedQuality = args.quality === undefined ? null : readIntegerArg(args, "quality", 90);
+  const zipWebpQuality = readIntegerArg(
+    args,
+    "zip-webp-quality",
+    DEFAULT_ZIP_WEBP_QUALITY
+  );
+  const zipWebpMinQuality = readIntegerArg(
+    args,
+    "zip-webp-min-quality",
+    DEFAULT_ZIP_WEBP_MIN_QUALITY
+  );
+  const zipWebpMaxQuality = readIntegerArg(
+    args,
+    "zip-webp-max-quality",
+    DEFAULT_ZIP_WEBP_MAX_QUALITY
+  );
+  const pdfJpegQuality = readIntegerArg(
+    args,
+    "pdf-jpeg-quality",
+    DEFAULT_PDF_JPEG_QUALITY
+  );
+  const pdfJpegMaxQuality = readIntegerArg(
+    args,
+    "pdf-jpeg-max-quality",
+    DEFAULT_PDF_JPEG_MAX_QUALITY
+  );
+  const pdfLongEdge = readIntegerArg(args, "pdf-long-edge", DEFAULT_PDF_LONG_EDGE);
+  const pdfMaxLongEdge = readIntegerArg(
+    args,
+    "pdf-max-long-edge",
+    DEFAULT_PDF_MAX_LONG_EDGE
+  );
+  const pdfMinLongEdge = readIntegerArg(
+    args,
+    "pdf-min-long-edge",
+    DEFAULT_PDF_MIN_LONG_EDGE
+  );
   const concurrency = readIntegerArg(args, "concurrency", 4);
-  const chunkSize = args["chunk-size"] === undefined ? null : readIntegerArg(args, "chunk-size", 1);
+  const chunkSize = readIntegerArg(args, "chunk-size", DEFAULT_CHUNK_SIZE);
   const minTailSize =
     args["min-tail-size"] === undefined ? null : readIntegerArg(args, "min-tail-size", 1);
-  const preserveResolution = Boolean(args["preserve-resolution"] || args["no-resize"]);
   const limit = args.limit === undefined ? null : readIntegerArg(args, "limit", 1);
   const setFilter = args.set ? String(args.set) : null;
   const keepJpgs = Boolean(args["keep-jpgs"]);
   const force = Boolean(args.force);
 
-  if (minQuality > maxQuality) {
-    throw new Error("--min-quality must be <= --max-quality");
+  if (zipWebpMinQuality > zipWebpQuality || zipWebpQuality > zipWebpMaxQuality) {
+    throw new Error(
+      "WebP quality must satisfy --zip-webp-min-quality <= " +
+        "--zip-webp-quality <= --zip-webp-max-quality"
+    );
   }
-  if (fixedQuality !== null && (fixedQuality < 1 || fixedQuality > 100)) {
-    throw new Error("--quality must be between 1 and 100");
+  if (
+    zipWebpMinQuality < 1 ||
+    zipWebpMaxQuality > 100 ||
+    pdfJpegQuality < 1 ||
+    pdfJpegMaxQuality > 100
+  ) {
+    throw new Error("WebP and JPEG quality values must be between 1 and 100");
   }
-  if (minQuality < 1 || maxQuality > 100) {
-    throw new Error("--min-quality and --max-quality must be between 1 and 100");
+  if (pdfJpegQuality > pdfJpegMaxQuality) {
+    throw new Error("--pdf-jpeg-quality must be <= --pdf-jpeg-max-quality");
   }
-  if (minLongEdge > maxLongEdge) {
-    throw new Error("--min-long-edge must be <= --max-long-edge");
+  if (pdfMinLongEdge > pdfLongEdge || pdfLongEdge > pdfMaxLongEdge) {
+    throw new Error(
+      "PDF long edge must satisfy --pdf-min-long-edge <= " +
+        "--pdf-long-edge <= --pdf-max-long-edge"
+    );
   }
 
   const sets = await discoverImageSets(inputDir, {
@@ -70,15 +125,17 @@ async function main() {
     inputDir,
     outputDir,
     targetMiB,
-    maxLongEdge,
-    minLongEdge,
-    maxQuality,
-    minQuality,
-    fixedQuality,
+    zipWebpQuality,
+    zipWebpMinQuality,
+    zipWebpMaxQuality,
+    pdfJpegQuality,
+    pdfJpegMaxQuality,
+    pdfLongEdge,
+    pdfMaxLongEdge,
+    pdfMinLongEdge,
     concurrency,
     chunkSize,
     minTailSize,
-    preserveResolution,
     limit,
     setFilter,
   });
@@ -97,15 +154,18 @@ async function main() {
     await buildSet(set, {
       outputDir,
       targetBytes: mibToBytes(targetMiB),
-      maxLongEdge,
-      minLongEdge,
-      maxQuality,
-      minQuality,
-      fixedQuality,
+      targetMiB,
+      zipWebpQuality,
+      zipWebpMinQuality,
+      zipWebpMaxQuality,
+      pdfJpegQuality,
+      pdfJpegMaxQuality,
+      pdfLongEdge,
+      pdfMaxLongEdge,
+      pdfMinLongEdge,
       concurrency,
       chunkSize,
       minTailSize,
-      preserveResolution,
       keepJpgs,
       force,
     });
@@ -209,13 +269,17 @@ function sourceScore(sourceType) {
 function printBuildPlan(sets, options) {
   console.log(`Input: ${options.inputDir}`);
   console.log(`Output: ${options.outputDir}`);
-  const edgeText = options.preserveResolution
-    ? "preserve source resolution"
-    : `edge ${options.minLongEdge}-${options.maxLongEdge}px`;
   console.log(
-    `Target: ${options.targetMiB} MiB per zip/pdf / ${edgeText} / ` +
-      `${options.fixedQuality === null ? `quality ${options.minQuality}-${options.maxQuality}` : `fixed quality ${options.fixedQuality}`} / ` +
-      `concurrency ${options.concurrency}`
+    `Target: ${options.targetMiB} MiB per zip/pdf / concurrency ${options.concurrency}`
+  );
+  console.log(
+    `ZIP: source-resolution WebP / quality ${options.zipWebpMinQuality}-` +
+      `${options.zipWebpMaxQuality} (baseline ${options.zipWebpQuality})`
+  );
+  console.log(
+    `PDF: JPEG quality ${options.pdfJpegQuality}-${options.pdfJpegMaxQuality} / long edge ` +
+      `${options.pdfMinLongEdge}-${options.pdfMaxLongEdge}px ` +
+      `(baseline ${options.pdfLongEdge}px / quality ${options.pdfJpegQuality})`
   );
   if (options.chunkSize) {
     const effectiveMinTailSize = getEffectiveMinTailSize(options.chunkSize, options.minTailSize);
@@ -249,8 +313,42 @@ function printBuildPlan(sets, options) {
 }
 
 async function buildSet(set, options) {
-  for (const chunk of splitFileChunks(set.files, options.chunkSize, options.minTailSize)) {
+  const chunks = splitFileChunks(set.files, options.chunkSize, options.minTailSize);
+  await assertNoObsoleteOutputs(set, chunks, options);
+  for (const chunk of chunks) {
     await buildChunk(set, chunk, options);
+  }
+}
+
+async function assertNoObsoleteOutputs(set, chunks, options) {
+  const outputCategoryDir = path.join(options.outputDir, set.category);
+  const entries = await fs.readdir(outputCategoryDir, { withFileTypes: true }).catch((error) => {
+    if (error.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  });
+  const expectedBaseNames = new Set(
+    chunks.map((chunk) => getOutputBaseName(set.name, chunk, set.files.length))
+  );
+  const escapedName = escapeRegExp(set.name);
+  const outputPattern = new RegExp(
+    `^(${escapedName}(?:_\\d+-\\d+)?)(?:\\.(?:zip|pdf|assets\\.json)|_jpg)$`,
+    "i"
+  );
+  const obsolete = entries
+    .map((entry) => ({ entry, match: entry.name.match(outputPattern) }))
+    .filter(({ match }) => match && !expectedBaseNames.has(match[1]))
+    .map(({ entry }) => entry.name);
+
+  if (obsolete.length > 0) {
+    throw new Error(
+      [
+        `${set.name}: 選択した出力フォルダに旧分割出力が残っています。`,
+        ...obsolete.map((name) => `- ${path.join(outputCategoryDir, name)}`),
+        "重複投稿を防ぐため停止しました。新しい空の出力フォルダ（推奨: optimized_webp_pdf）を選ぶか、旧出力を別の場所へ移動してから再実行してください。",
+      ].join("\n")
+    );
   }
 }
 
@@ -259,181 +357,277 @@ async function buildChunk(set, chunk, options) {
   const outputBaseName = getOutputBaseName(set.name, chunk, set.files.length);
   const zipPath = path.join(outputCategoryDir, `${outputBaseName}.zip`);
   const pdfPath = path.join(outputCategoryDir, `${outputBaseName}.pdf`);
+  const profilePath = path.join(outputCategoryDir, `${outputBaseName}.assets.json`);
   const jpgDir = path.join(outputCategoryDir, `${outputBaseName}_jpg`);
   const label = `[${set.category}] ${outputBaseName}`;
+  const sourceSignature = await createSourceSignature(chunk.files);
 
   if (!options.force && (await exists(zipPath)) && (await exists(pdfPath))) {
     const [zipStat, pdfStat] = await Promise.all([fs.stat(zipPath), fs.stat(pdfPath)]);
-    if (zipStat.size <= options.targetBytes && pdfStat.size <= options.targetBytes) {
-      console.log(`${label}: already built under target; skipping`);
+    if (
+      zipStat.size <= options.targetBytes &&
+      pdfStat.size <= options.targetBytes &&
+      (await outputProfileMatches(
+        profilePath,
+        options,
+        chunk.files.length,
+        sourceSignature,
+        zipPath,
+        pdfPath,
+        zipStat,
+        pdfStat
+      ))
+    ) {
+      console.log(`${label}: already built with the current profile under target; skipping`);
       return;
     }
   }
 
   console.log("");
   console.log(`${label}: optimizing ${chunk.files.length} image(s)...`);
-  const optimized = await findOptimizedImages(outputBaseName, chunk.files, options);
-  const edgeText = optimized.longEdge === null ? "source resolution" : `${optimized.longEdge}px`;
+  const zipResult = await findWebpZip(outputBaseName, chunk.files, options);
+  const pdfResult = await findJpegPdf(outputBaseName, chunk.files, options);
 
   console.log(
-    `${label}: selected ${edgeText} / quality ${optimized.quality} / images ${formatBytes(
-      sumBuffers(optimized.images)
-    )}`
+    `${label}: ZIP selected source-resolution WebP quality ${zipResult.quality} / ` +
+      `${formatBytes(zipResult.buffer.length)}`
+  );
+  console.log(
+    `${label}: PDF selected JPEG quality ${pdfResult.quality} / ` +
+      `${pdfResult.longEdge}px / ${formatBytes(pdfResult.buffer.length)}`
   );
 
-  await fs.mkdir(outputCategoryDir, { recursive: true });
-
-  const zipBuffer = await createZipBuffer(optimized.images);
-  await fs.writeFile(zipPath, zipBuffer);
-
-  const pdfBuffer = await createPdfBuffer(optimized.images);
-  await fs.writeFile(pdfPath, pdfBuffer);
+  const zipSize = zipResult.buffer.length;
+  const pdfSize = pdfResult.buffer.length;
+  if (zipSize > options.targetBytes || pdfSize > options.targetBytes) {
+    throw new Error(
+      `${outputBaseName} could not be reduced under ${formatBytes(options.targetBytes)}. ` +
+        `zip=${formatBytes(zipSize)}, pdf=${formatBytes(pdfSize)}.`
+    );
+  }
 
   if (options.keepJpgs) {
     await fs.rm(jpgDir, { recursive: true, force: true });
     await fs.mkdir(jpgDir, { recursive: true });
-    for (const image of optimized.images) {
+    for (const image of pdfResult.images) {
       await fs.writeFile(path.join(jpgDir, image.name), image.buffer);
     }
   }
 
-  const zipSize = zipBuffer.length;
-  const pdfSize = pdfBuffer.length;
+  const profileBuffer = Buffer.from(
+    `${JSON.stringify(
+      createOutputProfile(options, chunk.files.length, sourceSignature, zipResult, pdfResult),
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+  await writeOutputSetAtomically(
+    { zipPath, pdfPath, profilePath },
+    { zipBuffer: zipResult.buffer, pdfBuffer: pdfResult.buffer, profileBuffer }
+  );
+
   console.log(`${label}: zip ${formatBytes(zipSize)} -> ${zipPath}`);
   console.log(`${label}: pdf ${formatBytes(pdfSize)} -> ${pdfPath}`);
-
-  if (zipSize > options.targetBytes || pdfSize > options.targetBytes) {
-    throw new Error(
-      `${outputBaseName} could not be reduced under ${formatBytes(options.targetBytes)}. ` +
-        `zip=${formatBytes(zipSize)}, pdf=${formatBytes(pdfSize)}. ` +
-        "Lower --min-quality, split the image set further, or allow resizing."
-    );
-  }
 }
 
-async function findOptimizedImages(label, files, options) {
-  const edges = options.preserveResolution ? [null] : await buildLongEdgeCandidates(files, options);
-  let lastCandidate = null;
+async function findWebpZip(label, files, options) {
+  const tried = new Map();
+  let smallest = null;
 
-  for (const edge of edges) {
-    if (options.fixedQuality !== null) {
-      const edgeText = edge === null ? "source resolution" : `${edge}px`;
-      console.log(`  rendering ${edgeText} / fixed quality ${options.fixedQuality}...`);
-      return renderImages(files, {
-        longEdge: edge,
-        quality: options.fixedQuality,
-        concurrency: options.concurrency,
-      });
+  async function tryQuality(quality) {
+    if (tried.has(quality)) {
+      return tried.get(quality);
     }
 
-    const edgeText = edge === null ? "source resolution" : `${edge}px`;
-    console.log(`  trying ${edgeText} / quality ${options.maxQuality}...`);
-    const maxCandidate = await renderImages(files, {
-      longEdge: edge,
-      quality: options.maxQuality,
+    console.log(`  ZIP: trying source-resolution WebP quality ${quality}...`);
+    const images = await renderWebpImages(files, {
+      quality,
       concurrency: options.concurrency,
     });
-    lastCandidate = maxCandidate;
-    if (await fitsTarget(maxCandidate.images, options.targetBytes)) {
-      return maxCandidate;
+    const candidate = { quality, images, buffer: await createZipBuffer(images) };
+    tried.set(quality, candidate);
+    if (!smallest || candidate.buffer.length < smallest.buffer.length) {
+      smallest = candidate;
     }
+    return candidate;
+  }
 
-    let low = options.minQuality;
-    let high = options.maxQuality - 1;
-    let best = null;
+  const baseline = await tryQuality(options.zipWebpQuality);
+  let best = baseline.buffer.length <= options.targetBytes ? baseline : null;
+  let low = best ? options.zipWebpQuality + 1 : options.zipWebpMinQuality;
+  let high = best ? options.zipWebpMaxQuality : options.zipWebpQuality - 1;
 
-    while (low <= high) {
-      const quality = Math.floor((low + high) / 2);
-      console.log(`  trying ${edgeText} / quality ${quality}...`);
-      const candidate = await renderImages(files, {
-        longEdge: edge,
-        quality,
-        concurrency: options.concurrency,
-      });
-      lastCandidate = candidate;
+  while (low <= high) {
+    const quality = high === options.zipWebpMaxQuality ? high : Math.floor((low + high) / 2);
+    const candidate = await tryQuality(quality);
 
-      if (await fitsTarget(candidate.images, options.targetBytes)) {
-        best = candidate;
-        low = quality + 1;
-      } else {
-        high = quality - 1;
-      }
-    }
-
-    if (best) {
-      return best;
+    if (candidate.buffer.length <= options.targetBytes) {
+      best = candidate;
+      low = quality + 1;
+    } else {
+      high = quality - 1;
     }
   }
 
-  if (lastCandidate) {
-    return lastCandidate;
+  if (best) {
+    return best;
   }
 
-  throw new Error(`${label}: no images were rendered.`);
+  throw new Error(
+    `${label}: the WebP ZIP is ${formatBytes(smallest?.buffer.length || 0)} at quality ` +
+      `${options.zipWebpMinQuality}, above the ${formatBytes(options.targetBytes)} target. ` +
+      "Lower --zip-webp-min-quality or reduce the source image dimensions."
+  );
 }
 
-async function buildLongEdgeCandidates(files, options) {
-  const metadata = await readImageMetadata(files[0]);
-  const sourceLongEdge = Math.max(metadata.width || options.maxLongEdge, metadata.height || options.maxLongEdge);
-  const start = Math.min(options.maxLongEdge, sourceLongEdge);
-  const baseCandidates = [
-    start,
-    1536,
-    1440,
-    1365,
+async function findJpegPdf(label, files, options) {
+  const candidates = await buildPdfCandidates(files, options);
+  let smallest = null;
+
+  for (const settings of candidates) {
+    console.log(`  PDF: trying JPEG quality ${settings.quality} / ${settings.longEdge}px...`);
+    const images = await renderJpegImages(files, {
+      longEdge: settings.longEdge,
+      quality: settings.quality,
+      concurrency: options.concurrency,
+    });
+    const buffer = await createPdfBuffer(images);
+    const candidate = {
+      longEdge: settings.longEdge,
+      quality: settings.quality,
+      images,
+      buffer,
+    };
+    if (!smallest || buffer.length < smallest.buffer.length) {
+      smallest = candidate;
+    }
+    if (buffer.length <= options.targetBytes) {
+      return candidate;
+    }
+  }
+
+  throw new Error(
+    `${label}: the JPEG PDF is ${formatBytes(smallest?.buffer.length || 0)} at quality ` +
+      `${smallest?.quality || options.pdfJpegQuality} / ` +
+      `${smallest?.longEdge || options.pdfMinLongEdge}px, above the ` +
+      `${formatBytes(options.targetBytes)} target. Lower --pdf-min-long-edge or ` +
+      "--pdf-jpeg-quality if necessary."
+  );
+}
+
+async function buildPdfCandidates(files, options) {
+  const metadata = await mapWithConcurrency(files, options.concurrency, readImageMetadata);
+  const sourceLongEdge = Math.max(
+    ...metadata.map((image) =>
+      Math.max(image.width || options.pdfMaxLongEdge, image.height || options.pdfMaxLongEdge)
+    )
+  );
+  const maximum = Math.min(options.pdfMaxLongEdge, sourceLongEdge);
+  const baseline = Math.min(options.pdfLongEdge, sourceLongEdge);
+  const minimum = Math.min(options.pdfMinLongEdge, baseline);
+  const candidates = [];
+  const seen = new Set();
+
+  function addCandidate(longEdge, quality) {
+    const normalizedEdge = Math.max(minimum, Math.min(maximum, Math.round(longEdge)));
+    const normalizedQuality = Math.max(
+      options.pdfJpegQuality,
+      Math.min(options.pdfJpegMaxQuality, Math.round(quality))
+    );
+    const key = `${normalizedEdge}:${normalizedQuality}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      candidates.push({ longEdge: normalizedEdge, quality: normalizedQuality });
+    }
+  }
+
+  const edgeIncrease = Math.max(0, maximum - baseline);
+  const qualityIncrease = Math.max(0, options.pdfJpegMaxQuality - options.pdfJpegQuality);
+  const enhancementSteps = Math.min(
+    5,
+    Math.max(1, qualityIncrease, Math.ceil(edgeIncrease / 64))
+  );
+  for (let step = 0; step <= enhancementSteps; step += 1) {
+    const progress = step / enhancementSteps;
+    const longEdge =
+      step === enhancementSteps
+        ? baseline
+        : roundToMultiple(maximum - edgeIncrease * progress, 16);
+    const quality =
+      step === enhancementSteps
+        ? options.pdfJpegQuality
+        : options.pdfJpegMaxQuality - qualityIncrease * progress;
+    addCandidate(longEdge, quality);
+  }
+
+  const fallbackEdges = [
+    baseline,
+    1344,
+    1320,
     1280,
     1200,
     1120,
     1024,
     960,
-    options.minLongEdge,
+    minimum,
   ];
+  for (const edge of fallbackEdges) {
+    if (edge <= baseline && edge >= minimum) {
+      addCandidate(edge, options.pdfJpegQuality);
+    }
+  }
 
-  return Array.from(new Set(baseCandidates))
-    .filter((edge) => edge <= start && edge >= options.minLongEdge)
-    .sort((a, b) => b - a);
+  return candidates;
 }
 
-async function renderImages(files, options) {
-  return {
-    longEdge: options.longEdge,
-    quality: options.quality,
-    images: await mapWithConcurrency(files, options.concurrency, async (file) => {
-      const outputName = `${path.basename(file, path.extname(file))}.jpg`;
+function roundToMultiple(value, multiple) {
+  return Math.round(value / multiple) * multiple;
+}
 
-      try {
-        let pipeline = sharp(file, { limitInputPixels: false })
-          .rotate()
-          .flatten({ background: { r: 255, g: 255, b: 255 } });
+async function renderWebpImages(files, options) {
+  return mapWithConcurrency(files, options.concurrency, async (file) => {
+    const outputName = `${path.basename(file, path.extname(file))}.webp`;
 
-        if (options.longEdge !== null) {
-          pipeline = pipeline.resize({
-            width: options.longEdge,
-            height: options.longEdge,
-            fit: "inside",
-            withoutEnlargement: true,
-          });
-        }
+    try {
+      const buffer = await sharp(file, { limitInputPixels: false })
+        .rotate()
+        .flatten({ background: { r: 255, g: 255, b: 255 } })
+        .webp({ quality: options.quality })
+        .toBuffer();
+      return { source: file, name: outputName, buffer };
+    } catch (error) {
+      throw createImageReadError(file, error);
+    }
+  });
+}
 
-        const buffer = await pipeline
-          .jpeg({
-            quality: options.quality,
-            mozjpeg: true,
-            progressive: true,
-            chromaSubsampling: "4:2:0",
-          })
-          .toBuffer();
+async function renderJpegImages(files, options) {
+  return mapWithConcurrency(files, options.concurrency, async (file) => {
+    const outputName = `${path.basename(file, path.extname(file))}.jpg`;
 
-        return {
-          source: file,
-          name: outputName,
-          buffer,
-        };
-      } catch (error) {
-        throw createImageReadError(file, error);
-      }
-    }),
-  };
+    try {
+      const buffer = await sharp(file, { limitInputPixels: false })
+        .rotate()
+        .flatten({ background: { r: 255, g: 255, b: 255 } })
+        .resize({
+          width: options.longEdge,
+          height: options.longEdge,
+          fit: "inside",
+          withoutEnlargement: true,
+        })
+        .jpeg({
+          quality: options.quality,
+          mozjpeg: true,
+          progressive: true,
+          chromaSubsampling: "4:2:0",
+        })
+        .toBuffer();
+      return { source: file, name: outputName, buffer };
+    } catch (error) {
+      throw createImageReadError(file, error);
+    }
+  });
 }
 
 async function validateInputImages(sets, concurrency) {
@@ -559,19 +753,126 @@ function getOutputBaseName(setName, chunk, totalFiles) {
   return `${setName}_${chunk.start}-${chunk.end}`;
 }
 
-async function fitsTarget(images, targetBytes) {
-  const imageBytes = sumBuffers(images);
-  if (imageBytes > targetBytes) {
+function createOutputProfile(options, imageCount, sourceSignature, zipResult, pdfResult) {
+  return {
+    profileVersion: ASSET_PROFILE_VERSION,
+    imageCount,
+    sourceSignature,
+    targetMiB: options.targetMiB,
+    zip: {
+      format: "webp",
+      preserveResolution: true,
+      requestedQuality: options.zipWebpQuality,
+      maximumQuality: options.zipWebpMaxQuality,
+      minimumQuality: options.zipWebpMinQuality,
+      selectedQuality: zipResult.quality,
+      bytes: zipResult.buffer.length,
+      sha256: hashBuffer(zipResult.buffer),
+    },
+    pdf: {
+      imageFormat: "jpeg",
+      requestedLongEdge: options.pdfLongEdge,
+      maximumLongEdge: options.pdfMaxLongEdge,
+      minimumLongEdge: options.pdfMinLongEdge,
+      quality: options.pdfJpegQuality,
+      maximumQuality: options.pdfJpegMaxQuality,
+      selectedQuality: pdfResult.quality,
+      selectedLongEdge: pdfResult.longEdge,
+      bytes: pdfResult.buffer.length,
+      sha256: hashBuffer(pdfResult.buffer),
+    },
+  };
+}
+
+async function outputProfileMatches(
+  profilePath,
+  options,
+  imageCount,
+  sourceSignature,
+  zipPath,
+  pdfPath,
+  zipStat,
+  pdfStat
+) {
+  try {
+    const profile = JSON.parse(await fs.readFile(profilePath, "utf8"));
+    const settingsMatch =
+      profile.profileVersion === ASSET_PROFILE_VERSION &&
+      profile.imageCount === imageCount &&
+      profile.sourceSignature === sourceSignature &&
+      profile.targetMiB === options.targetMiB &&
+      profile.zip?.format === "webp" &&
+      profile.zip?.preserveResolution === true &&
+      profile.zip?.requestedQuality === options.zipWebpQuality &&
+      profile.zip?.maximumQuality === options.zipWebpMaxQuality &&
+      profile.zip?.minimumQuality === options.zipWebpMinQuality &&
+      profile.pdf?.imageFormat === "jpeg" &&
+      profile.pdf?.requestedLongEdge === options.pdfLongEdge &&
+      profile.pdf?.maximumLongEdge === options.pdfMaxLongEdge &&
+      profile.pdf?.minimumLongEdge === options.pdfMinLongEdge &&
+      profile.pdf?.quality === options.pdfJpegQuality &&
+      profile.pdf?.maximumQuality === options.pdfJpegMaxQuality;
+    if (
+      !settingsMatch ||
+      profile.zip?.bytes !== zipStat.size ||
+      profile.pdf?.bytes !== pdfStat.size ||
+      !profile.zip?.sha256 ||
+      !profile.pdf?.sha256
+    ) {
+      return false;
+    }
+
+    const [zipBuffer, pdfBuffer] = await Promise.all([fs.readFile(zipPath), fs.readFile(pdfPath)]);
+    return (
+      hashBuffer(zipBuffer) === profile.zip.sha256 &&
+      hashBuffer(pdfBuffer) === profile.pdf.sha256
+    );
+  } catch {
     return false;
   }
+}
 
-  const zipBuffer = await createZipBuffer(images);
-  if (zipBuffer.length > targetBytes) {
-    return false;
+async function writeOutputSetAtomically(paths, buffers) {
+  await fs.mkdir(path.dirname(paths.zipPath), { recursive: true });
+  const suffix = `.tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+  const temporary = {
+    zipPath: `${paths.zipPath}${suffix}`,
+    pdfPath: `${paths.pdfPath}${suffix}`,
+    profilePath: `${paths.profilePath}${suffix}`,
+  };
+
+  try {
+    await Promise.all([
+      fs.writeFile(temporary.zipPath, buffers.zipBuffer),
+      fs.writeFile(temporary.pdfPath, buffers.pdfBuffer),
+      fs.writeFile(temporary.profilePath, buffers.profileBuffer),
+    ]);
+    await fs.rename(temporary.zipPath, paths.zipPath);
+    await fs.rename(temporary.pdfPath, paths.pdfPath);
+    await fs.rename(temporary.profilePath, paths.profilePath);
+  } finally {
+    await Promise.all(
+      Object.values(temporary).map((file) => fs.rm(file, { force: true }).catch(() => {}))
+    );
   }
+}
 
-  const pdfBuffer = await createPdfBuffer(images);
-  return pdfBuffer.length <= targetBytes;
+function hashBuffer(buffer) {
+  return crypto.createHash("sha256").update(buffer).digest("hex");
+}
+
+async function createSourceSignature(files) {
+  const hash = crypto.createHash("sha256");
+  for (const file of files) {
+    const stat = await fs.stat(file);
+    hash.update(path.basename(file));
+    hash.update("\0");
+    hash.update(String(stat.size));
+    hash.update("\0");
+    hash.update(String(stat.mtimeMs));
+    hash.update("\0");
+  }
+  return hash.digest("hex");
 }
 
 function createZipBuffer(images) {
@@ -627,10 +928,6 @@ async function sumFileSizes(files) {
     total += (await fs.stat(file)).size;
   }
   return total;
-}
-
-function sumBuffers(images) {
-  return images.reduce((sum, image) => sum + image.buffer.length, 0);
 }
 
 async function exists(file) {
@@ -696,6 +993,10 @@ function compareNames(a, b) {
   return a.localeCompare(b, "ja");
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function formatBytes(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
 }
@@ -709,8 +1010,8 @@ function printHelp() {
 
 Usage:
   npm run build-assets -- plan --input ./raw_images
-  npm run build-assets -- run --input ./raw_images --output ./optimized
-  npm run build-assets -- run --input ./raw_images --chunk-size 50 --preserve-resolution
+  npm run build-assets -- run --input ./raw_images --output ./optimized_webp_pdf
+  npm run build-assets -- run --input ./raw_images --chunk-size 100
 
 Input:
   raw_images/
@@ -718,31 +1019,33 @@ Input:
     title_jpg/*.jpg
 
 Output:
-  optimized/
+  optimized_webp_pdf/
     category/
       title.zip
       title.pdf
-      title_1-50.zip
-      title_1-50.pdf
+      title.assets.json
+      title_1-100.zip
+      title_1-100.pdf
 
 Options:
   --input <path>          Source image root. Default: ./raw_images
-  --output <path>         Output folder for zip/pdf pairs. Default: ./optimized
+  --output <path>         Output folder for zip/pdf pairs. Default: ./optimized_webp_pdf
   --category <name>       Category used when sets are directly under input. Default: category1
   --set <name>            Build only one image set
   --limit <n>             Build only the first n image sets
   --target-mib <n>        Max size for each zip/pdf. Default: 9.8
-  --chunk-size <n>        Split each image set into chunks of n images
+  --chunk-size <n>        Split each image set into chunks of n images. Default: 100
   --min-tail-size <n>     Merge final chunk when it has n or fewer images. Default: 10% of chunk size
-  --preserve-resolution   Keep source dimensions and only change JPEG quality
-  --no-resize             Alias for --preserve-resolution
-  --max-long-edge <px>    First long-edge size to try. Default: 1600
-  --min-long-edge <px>    Lowest long-edge size to try. Default: 900
-  --max-quality <n>       Highest JPEG quality to try. Default: 95
-  --min-quality <n>       Lowest JPEG quality to try. Default: 42
-  --quality <n>           Fixed JPEG quality. Faster; skips quality search
+  --zip-webp-quality <n>  Baseline WebP quality for ZIP images. Default: 75
+  --zip-webp-max-quality <n> Highest WebP quality used when size allows. Default: 85
+  --zip-webp-min-quality <n> Lowest WebP quality allowed. Default: 70
+  --pdf-jpeg-quality <n>  Baseline/minimum JPEG quality for PDF pages. Default: 70
+  --pdf-jpeg-max-quality <n> Highest JPEG quality used when size allows. Default: 75
+  --pdf-long-edge <px>    Baseline PDF image long edge. Default: 1350
+  --pdf-max-long-edge <px> Highest PDF image long edge when size allows. Default: 1600
+  --pdf-min-long-edge <px> Lowest PDF image long edge. Default: 900
   --concurrency <n>       Number of images to convert in parallel. Default: 4
-  --keep-jpgs             Also save optimized JPGs next to zip/pdf
+  --keep-jpgs             Also save the PDF-optimized JPGs next to zip/pdf
   --force                 Rebuild even if existing outputs are under target
 `);
 }

@@ -1,9 +1,11 @@
 const api = window.discordPostTool;
 const BASE_STORAGE_KEY = "discordPostToolState";
+const ASSET_PROFILE_STORAGE_VERSION = 3;
 
 const state = {
   activeTab: "assets",
   localStateKey: BASE_STORAGE_KEY,
+  defaultOptimizedDir: "",
   running: false,
 };
 
@@ -14,7 +16,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   bindEvents();
   await hydrateDefaults();
   restoreLocalState();
-  updateFixedQualityState();
   refreshGuildName({ silent: true });
 });
 
@@ -34,14 +35,17 @@ function bindElements() {
     "assetOutputDir",
     "assetChunkSize",
     "assetTargetMiB",
-    "assetMinQuality",
-    "assetMaxQuality",
-    "assetFixedQuality",
+    "assetZipWebpQuality",
+    "assetZipWebpMaxQuality",
+    "assetZipWebpMinQuality",
+    "assetPdfJpegQuality",
+    "assetPdfJpegMaxQuality",
+    "assetPdfLongEdge",
+    "assetPdfMaxLongEdge",
+    "assetPdfMinLongEdge",
     "assetConcurrency",
     "assetSetName",
     "assetLimit",
-    "assetPreserveResolution",
-    "assetFixedQualityEnabled",
     "assetForce",
     "assetKeepJpgs",
     "assetPlan",
@@ -97,9 +101,6 @@ function bindEvents() {
       if (input.id === "postGuildId" || input.id === "postBotToken") {
         markGuildUnchecked();
       }
-      if (input.id === "assetFixedQualityEnabled") {
-        updateFixedQualityState();
-      }
     });
   });
 
@@ -109,6 +110,7 @@ function bindEvents() {
 async function hydrateDefaults() {
   const defaults = await api.getDefaults();
   state.localStateKey = makeProjectStateKey(defaults.rootDir);
+  state.defaultOptimizedDir = defaults.optimizedDir;
   elements.assetInputDir.value ||= defaults.rawImagesDir;
   elements.assetOutputDir.value ||= defaults.optimizedDir;
   elements.postInputDir.value ||= defaults.optimizedDir;
@@ -127,10 +129,10 @@ function switchTab(tab) {
 
   if (tab === "assets") {
     elements.viewTitle.textContent = "画像変換";
-    elements.viewSubtitle.textContent = "raw_images から Discord 投稿用の zip/pdf を生成します。";
+    elements.viewSubtitle.textContent = "ZIPは元解像度WebP、PDFは縮小JPEGで生成します。";
   } else {
     elements.viewTitle.textContent = "Discord投稿";
-    elements.viewSubtitle.textContent = "optimized_split のカテゴリ/ファイル構成をDiscordへ反映します。";
+    elements.viewSubtitle.textContent = "変換済みフォルダのカテゴリ/ファイル構成をDiscordへ反映します。";
   }
 
   saveLocalState();
@@ -144,12 +146,15 @@ async function startAssetsJob(command) {
     outputDir: elements.assetOutputDir.value,
     chunkSize: valueOrEmpty(elements.assetChunkSize.value),
     targetMiB: valueOrEmpty(elements.assetTargetMiB.value),
-    minQuality: valueOrEmpty(elements.assetMinQuality.value),
-    maxQuality: valueOrEmpty(elements.assetMaxQuality.value),
-    fixedQualityEnabled: elements.assetFixedQualityEnabled.checked,
-    fixedQuality: valueOrEmpty(elements.assetFixedQuality.value),
+    zipWebpQuality: valueOrEmpty(elements.assetZipWebpQuality.value),
+    zipWebpMaxQuality: valueOrEmpty(elements.assetZipWebpMaxQuality.value),
+    zipWebpMinQuality: valueOrEmpty(elements.assetZipWebpMinQuality.value),
+    pdfJpegQuality: valueOrEmpty(elements.assetPdfJpegQuality.value),
+    pdfJpegMaxQuality: valueOrEmpty(elements.assetPdfJpegMaxQuality.value),
+    pdfLongEdge: valueOrEmpty(elements.assetPdfLongEdge.value),
+    pdfMaxLongEdge: valueOrEmpty(elements.assetPdfMaxLongEdge.value),
+    pdfMinLongEdge: valueOrEmpty(elements.assetPdfMinLongEdge.value),
     concurrency: valueOrEmpty(elements.assetConcurrency.value),
-    preserveResolution: elements.assetPreserveResolution.checked,
     force: elements.assetForce.checked,
     keepJpgs: elements.assetKeepJpgs.checked,
     setName: valueOrEmpty(elements.assetSetName.value),
@@ -205,10 +210,6 @@ async function refreshGuildName(options = {}) {
 function markGuildUnchecked() {
   elements.postGuildName.textContent = "未確認";
   elements.guildStatus.textContent = valueOrEmpty(elements.postGuildId.value) ? "未確認" : "未設定";
-}
-
-function updateFixedQualityState() {
-  elements.assetFixedQuality.disabled = !elements.assetFixedQualityEnabled.checked;
 }
 
 async function startJob(request) {
@@ -301,6 +302,7 @@ function saveLocalState() {
     data[input.id] = input.type === "checkbox" ? input.checked : input.value;
   });
   data.activeTab = state.activeTab;
+  data.assetProfileVersion = ASSET_PROFILE_STORAGE_VERSION;
   localStorage.setItem(state.localStateKey, JSON.stringify(data));
 }
 
@@ -318,7 +320,7 @@ function restoreLocalState() {
   }
 
   for (const [id, value] of Object.entries(data)) {
-    if (id === "activeTab") {
+    if (id === "activeTab" || id === "assetProfileVersion") {
       continue;
     }
     const input = elements[id];
@@ -332,7 +334,25 @@ function restoreLocalState() {
     }
   }
 
+  if (data.assetProfileVersion !== ASSET_PROFILE_STORAGE_VERSION) {
+    elements.assetChunkSize.value = "100";
+    elements.assetZipWebpMaxQuality.value = "85";
+    elements.assetPdfJpegMaxQuality.value = "75";
+    elements.assetPdfMaxLongEdge.value = "1600";
+    if (isLegacySplitOutput(elements.assetOutputDir.value)) {
+      elements.assetOutputDir.value = state.defaultOptimizedDir;
+    }
+    if (isLegacySplitOutput(elements.postInputDir.value)) {
+      elements.postInputDir.value = state.defaultOptimizedDir;
+    }
+    saveLocalState();
+  }
+
   if (data.activeTab) {
     switchTab(data.activeTab);
   }
+}
+
+function isLegacySplitOutput(value) {
+  return /(?:^|[\\/])optimized_split[\\/]?$/i.test(String(value || "").trim());
 }
