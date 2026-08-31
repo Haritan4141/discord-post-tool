@@ -67,6 +67,7 @@ test("raises quality when size allows and builds one WebP ZIP plus one JPEG PDF"
   assert.equal(profile.zip.format, "webp");
   assert.equal(profile.zip.requestedQuality, 75);
   assert.equal(profile.zip.maximumQuality, 85);
+  assert.equal(profile.zip.minimumQuality, 65);
   assert.equal(profile.zip.selectedQuality, 85);
   assert.match(profile.zip.sha256, /^[a-f0-9]{64}$/);
   assert.equal(profile.pdf.imageFormat, "jpeg");
@@ -80,6 +81,35 @@ test("raises quality when size allows and builds one WebP ZIP plus one JPEG PDF"
   const reused = runBuild(buildArgs);
   assert.equal(reused.status, 0, reused.stderr || reused.stdout);
   assert.match(reused.stdout, /already built with the current profile under target; skipping/);
+
+  const oldMinimumOutputDir = path.join(testDir, "old-minimum-output");
+  const oldMinimumArgs = [
+    BUILD_SCRIPT,
+    "run",
+    "--input",
+    inputDir,
+    "--output",
+    oldMinimumOutputDir,
+    "--chunk-size",
+    "100",
+  ];
+  const oldMinimumBuild = runBuild([
+    ...oldMinimumArgs,
+    "--zip-webp-min-quality",
+    "70",
+    "--force",
+  ]);
+  assert.equal(oldMinimumBuild.status, 0, oldMinimumBuild.stderr || oldMinimumBuild.stdout);
+  const reusedAfterMinimumMigration = runBuild(oldMinimumArgs);
+  assert.equal(
+    reusedAfterMinimumMigration.status,
+    0,
+    reusedAfterMinimumMigration.stderr || reusedAfterMinimumMigration.stdout
+  );
+  assert.match(
+    reusedAfterMinimumMigration.stdout,
+    /already built with the current profile under target; skipping/
+  );
 
   const rebuilt = runBuild([...buildArgs, "--force"]);
   assert.equal(rebuilt.status, 0, rebuilt.stderr || rebuilt.stdout);
@@ -143,6 +173,83 @@ test("falls below the WebP baseline when a heavy set needs it", async (t) => {
   assert.ok(profile.zip.selectedQuality < 75);
   assert.ok(profile.zip.bytes <= targetMiB * 1024 * 1024);
   assert.ok(profile.pdf.bytes <= targetMiB * 1024 * 1024);
+});
+
+test("falls below quality 70 when required while preserving source resolution", async (t) => {
+  const testDir = await fs.mkdtemp(path.join(os.tmpdir(), "discord-post-tool-q68-test-"));
+  t.after(() => fs.rm(testDir, { recursive: true, force: true }));
+
+  const inputDir = path.join(testDir, "input");
+  const imageDir = path.join(inputDir, "heavy_png");
+  const outputDir = path.join(testDir, "output");
+  await fs.mkdir(imageDir, { recursive: true });
+
+  for (let index = 0; index < 4; index += 1) {
+    await createNoiseFixture(path.join(imageDir, `${index + 1}.png`), index);
+  }
+
+  const targetMiB = 1.83;
+  const result = runBuild([
+    BUILD_SCRIPT,
+    "run",
+    "--input",
+    inputDir,
+    "--output",
+    outputDir,
+    "--target-mib",
+    String(targetMiB),
+    "--pdf-jpeg-quality",
+    "50",
+    "--pdf-jpeg-max-quality",
+    "50",
+    "--pdf-long-edge",
+    "200",
+    "--pdf-max-long-edge",
+    "200",
+    "--pdf-min-long-edge",
+    "200",
+    "--force",
+  ]);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const profile = JSON.parse(
+    await fs.readFile(path.join(outputDir, "カテゴリ1", "heavy.assets.json"), "utf8")
+  );
+  assert.ok(profile.zip.selectedQuality >= 65);
+  assert.ok(profile.zip.selectedQuality < 70);
+  assert.equal(profile.zip.preserveResolution, true);
+  assert.ok(profile.zip.bytes <= targetMiB * 1024 * 1024);
+
+  const strictOutputDir = path.join(testDir, "strict-output");
+  const strictResult = runBuild([
+    BUILD_SCRIPT,
+    "run",
+    "--input",
+    inputDir,
+    "--output",
+    strictOutputDir,
+    "--target-mib",
+    String(targetMiB),
+    "--zip-webp-min-quality",
+    "70",
+    "--pdf-jpeg-quality",
+    "50",
+    "--pdf-jpeg-max-quality",
+    "50",
+    "--pdf-long-edge",
+    "200",
+    "--pdf-max-long-edge",
+    "200",
+    "--pdf-min-long-edge",
+    "200",
+    "--force",
+  ]);
+  assert.equal(strictResult.status, 1);
+  assert.match(strictResult.stderr, /最低品質 70/);
+  await assert.rejects(
+    fs.access(path.join(strictOutputDir, "カテゴリ1", "heavy.zip")),
+    (error) => error.code === "ENOENT"
+  );
 });
 
 async function createFixtureImage(file, color) {

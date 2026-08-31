@@ -1,6 +1,6 @@
 const api = window.discordPostTool;
 const BASE_STORAGE_KEY = "discordPostToolState";
-const ASSET_PROFILE_STORAGE_VERSION = 3;
+const ASSET_PROFILE_STORAGE_VERSION = 4;
 
 const state = {
   activeTab: "assets",
@@ -337,6 +337,9 @@ function restoreLocalState() {
   if (data.assetProfileVersion !== ASSET_PROFILE_STORAGE_VERSION) {
     elements.assetChunkSize.value = "100";
     elements.assetZipWebpMaxQuality.value = "85";
+    if (String(data.assetZipWebpMinQuality ?? "70") === "70") {
+      elements.assetZipWebpMinQuality.value = "65";
+    }
     elements.assetPdfJpegMaxQuality.value = "75";
     elements.assetPdfMaxLongEdge.value = "1600";
     if (isLegacySplitOutput(elements.assetOutputDir.value)) {

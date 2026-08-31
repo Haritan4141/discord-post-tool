@@ -241,7 +241,7 @@ npm run plan -- --input ./optimized_webp_pdf
 
 標準プロファイルは、100枚を分割せず次の2形式を独立して生成します。
 
-- zip: 元解像度のWebP。品質75を基準に、余裕があれば85まで引き上げ、超過時は70まで自動調整
+- zip: 元解像度のWebP。品質75を基準に、余裕があれば85まで引き上げ、超過時は65まで自動調整
 - pdf: 長辺1350px・JPEG品質70を基準に、余裕があれば長辺1600px・品質75までバランスよく引き上げ、超過時は長辺900pxまで段階的に縮小
 
 `作品名.assets.json` は、実際に採用した品質・解像度・完成サイズを記録するプロファイルです。投稿CLIはこのファイルを添付しません。
@@ -259,7 +259,7 @@ npm run build-assets -- run --input ./raw_images --output ./optimized_webp_pdf \
   --chunk-size 100 \
   --zip-webp-quality 75 \
   --zip-webp-max-quality 85 \
-  --zip-webp-min-quality 70 \
+  --zip-webp-min-quality 65 \
   --pdf-jpeg-quality 70 \
   --pdf-jpeg-max-quality 75 \
   --pdf-long-edge 1350 \
@@ -269,6 +269,10 @@ npm run build-assets -- run --input ./raw_images --output ./optimized_webp_pdf \
 ```
 
 GUIにも同じ既定値が入っています。zipとpdfは完成後の実サイズを別々に検査し、どちらかが目標を超える場合は出力を確定せず停止します。
+
+WebPの最低品質は探索範囲の下限です。通常の画像を常に品質65へ下げる設定ではなく、目標サイズに収まる範囲で最も高い品質を自動採用します。旧GUI設定の最低品質70は、新しい既定値65へ一度だけ移行します。
+
+最低品質70で正常生成済みの出力は、採用品質が新しい下限を満たしていれば再利用できます。エラー後に全体を再実行する場合、「既存出力を上書きする」を外すと、完了済みの作品をスキップして続行できます。
 
 「PDF用JPGも保存する」は、PDFへ埋め込んだ変換後JPEGを確認用として `<作品名>_jpg` フォルダにも保存するオプションです。zip内のWebPと投稿用zip/pdfだけが必要なら、通常はオフで問題ありません。
 

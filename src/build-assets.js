@@ -19,7 +19,7 @@ const ASSET_PROFILE_VERSION = 3;
 const DEFAULT_CHUNK_SIZE = 100;
 const DEFAULT_ZIP_WEBP_QUALITY = 75;
 const DEFAULT_ZIP_WEBP_MAX_QUALITY = 85;
-const DEFAULT_ZIP_WEBP_MIN_QUALITY = 70;
+const DEFAULT_ZIP_WEBP_MIN_QUALITY = 65;
 const DEFAULT_PDF_JPEG_QUALITY = 70;
 const DEFAULT_PDF_JPEG_MAX_QUALITY = 75;
 const DEFAULT_PDF_LONG_EDGE = 1350;
@@ -475,9 +475,10 @@ async function findWebpZip(label, files, options) {
   }
 
   throw new Error(
-    `${label}: the WebP ZIP is ${formatBytes(smallest?.buffer.length || 0)} at quality ` +
-      `${options.zipWebpMinQuality}, above the ${formatBytes(options.targetBytes)} target. ` +
-      "Lower --zip-webp-min-quality or reduce the source image dimensions."
+    `${label}: ZIP用WebPを最低品質 ${options.zipWebpMinQuality} まで下げても ` +
+      `${formatBytes(smallest?.buffer.length || 0)} あり、目標の ` +
+      `${formatBytes(options.targetBytes)} を超えています。` +
+      "GUIの「ZIP WebP 最低品質」をさらに下げるか、1組あたりの最大枚数を減らしてください。"
   );
 }
 
@@ -805,7 +806,7 @@ async function outputProfileMatches(
       profile.zip?.preserveResolution === true &&
       profile.zip?.requestedQuality === options.zipWebpQuality &&
       profile.zip?.maximumQuality === options.zipWebpMaxQuality &&
-      profile.zip?.minimumQuality === options.zipWebpMinQuality &&
+      profile.zip?.selectedQuality >= options.zipWebpMinQuality &&
       profile.pdf?.imageFormat === "jpeg" &&
       profile.pdf?.requestedLongEdge === options.pdfLongEdge &&
       profile.pdf?.maximumLongEdge === options.pdfMaxLongEdge &&
@@ -1038,7 +1039,7 @@ Options:
   --min-tail-size <n>     Merge final chunk when it has n or fewer images. Default: 10% of chunk size
   --zip-webp-quality <n>  Baseline WebP quality for ZIP images. Default: 75
   --zip-webp-max-quality <n> Highest WebP quality used when size allows. Default: 85
-  --zip-webp-min-quality <n> Lowest WebP quality allowed. Default: 70
+  --zip-webp-min-quality <n> Lowest WebP quality allowed. Default: 65
   --pdf-jpeg-quality <n>  Baseline/minimum JPEG quality for PDF pages. Default: 70
   --pdf-jpeg-max-quality <n> Highest JPEG quality used when size allows. Default: 75
   --pdf-long-edge <px>    Baseline PDF image long edge. Default: 1350
