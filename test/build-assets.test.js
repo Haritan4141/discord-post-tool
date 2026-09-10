@@ -9,6 +9,7 @@ const sharp = require("sharp");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
 const BUILD_SCRIPT = path.join(ROOT_DIR, "src", "build-assets.js");
+const POST_SCRIPT = path.join(ROOT_DIR, "src", "cli.js");
 
 test("raises quality when size allows and builds one WebP ZIP plus one JPEG PDF", async (t) => {
   const testDir = await fs.mkdtemp(path.join(os.tmpdir(), "discord-post-tool-test-"));
@@ -175,7 +176,7 @@ test("falls below the WebP baseline when a heavy set needs it", async (t) => {
   assert.ok(profile.pdf.bytes <= targetMiB * 1024 * 1024);
 });
 
-test("falls below quality 70 when required while preserving source resolution", async (t) => {
+test("falls below quality 70 when possible and adaptively splits when required", async (t) => {
   const testDir = await fs.mkdtemp(path.join(os.tmpdir(), "discord-post-tool-q68-test-"));
   t.after(() => fs.rm(testDir, { recursive: true, force: true }));
 
@@ -221,7 +222,7 @@ test("falls below quality 70 when required while preserving source resolution", 
   assert.ok(profile.zip.bytes <= targetMiB * 1024 * 1024);
 
   const strictOutputDir = path.join(testDir, "strict-output");
-  const strictResult = runBuild([
+  const strictArgs = [
     BUILD_SCRIPT,
     "run",
     "--input",
@@ -242,14 +243,49 @@ test("falls below quality 70 when required while preserving source resolution", 
     "200",
     "--pdf-min-long-edge",
     "200",
-    "--force",
-  ]);
-  assert.equal(strictResult.status, 1);
-  assert.match(strictResult.stderr, /最低品質 70/);
+  ];
+  const strictResult = runBuild(strictArgs);
+  assert.equal(strictResult.status, 0, strictResult.stderr || strictResult.stdout);
+  assert.match(strictResult.stdout, /自動分割して再試行します/);
+
+  const strictCategoryDir = path.join(strictOutputDir, "カテゴリ1");
+  const expectedUploadFiles = [
+    "heavy_1-2.pdf",
+    "heavy_1-2.zip",
+    "heavy_3-4.pdf",
+    "heavy_3-4.zip",
+  ];
+  const strictFiles = (await fs.readdir(strictCategoryDir))
+    .filter((name) => name.endsWith(".zip") || name.endsWith(".pdf"))
+    .sort();
+  assert.deepEqual(strictFiles, expectedUploadFiles);
   await assert.rejects(
     fs.access(path.join(strictOutputDir, "カテゴリ1", "heavy.zip")),
     (error) => error.code === "ENOENT"
   );
+
+  const uploadPlan = runBuild([POST_SCRIPT, "plan", "--input", strictOutputDir]);
+  assert.equal(uploadPlan.status, 0, uploadPlan.stderr || uploadPlan.stdout);
+  assert.match(uploadPlan.stdout, /Plan: 1 categories, 1 channels, 4 files/);
+  assert.match(uploadPlan.stdout, /# heavy/);
+
+  const resumed = runBuild(strictArgs);
+  assert.equal(resumed.status, 0, resumed.stderr || resumed.stdout);
+  assert.match(resumed.stdout, /existing adaptive split detected; resuming split output/);
+  assert.equal(
+    (resumed.stdout.match(/already built with the current profile under target; skipping/g) || [])
+      .length,
+    2
+  );
+
+  await fs.rm(path.join(strictCategoryDir, "heavy_3-4.pdf"));
+  const resumedAfterIncompleteOutput = runBuild(strictArgs);
+  assert.equal(
+    resumedAfterIncompleteOutput.status,
+    0,
+    resumedAfterIncompleteOutput.stderr || resumedAfterIncompleteOutput.stdout
+  );
+  await fs.access(path.join(strictCategoryDir, "heavy_3-4.pdf"));
 });
 
 async function createFixtureImage(file, color) {

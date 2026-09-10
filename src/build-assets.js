@@ -26,6 +26,15 @@ const DEFAULT_PDF_LONG_EDGE = 1350;
 const DEFAULT_PDF_MAX_LONG_EDGE = 1600;
 const DEFAULT_PDF_MIN_LONG_EDGE = 900;
 
+class AssetSizeLimitError extends Error {
+  constructor(message, kind, actualBytes) {
+    super(message);
+    this.name = "AssetSizeLimitError";
+    this.kind = kind;
+    this.actualBytes = actualBytes;
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const command = args._[0] || "plan";
@@ -287,6 +296,7 @@ function printBuildPlan(sets, options) {
       `Chunk size: ${options.chunkSize} image(s) per zip/pdf pair ` +
         `(tail <= ${effectiveMinTailSize} image(s) is merged)`
     );
+    console.log("Adaptive split: enabled (oversized chunks are halved automatically)");
   }
   if (options.setFilter) {
     console.log(`Set filter: ${options.setFilter}`);
@@ -313,11 +323,104 @@ function printBuildPlan(sets, options) {
 }
 
 async function buildSet(set, options) {
-  const chunks = splitFileChunks(set.files, options.chunkSize, options.minTailSize);
-  await assertNoObsoleteOutputs(set, chunks, options);
-  for (const chunk of chunks) {
-    await buildChunk(set, chunk, options);
+  const initialChunks = splitFileChunks(set.files, options.chunkSize, options.minTailSize);
+  const existingRanges = await findExistingOutputRanges(set, options);
+  const resolvedChunks = [];
+
+  for (const chunk of initialChunks) {
+    resolvedChunks.push(
+      ...(await resolveAdaptiveChunks(set, chunk, options, existingRanges))
+    );
   }
+
+  await assertNoObsoleteOutputs(
+    set,
+    resolvedChunks.map((resolved) => resolved.chunk),
+    options
+  );
+
+  for (const resolved of resolvedChunks) {
+    if (resolved.reused) {
+      console.log(`${resolved.context.label}: already built with the current profile under target; skipping`);
+      continue;
+    }
+    await writePreparedChunk(resolved.context, resolved.zipResult, resolved.pdfResult, options);
+  }
+}
+
+async function resolveAdaptiveChunks(set, chunk, options, existingRanges) {
+  const context = await createChunkContext(set, chunk, options);
+  if (!options.force && (await chunkOutputIsReusable(context, chunk, options))) {
+    return [{ chunk, context, reused: true }];
+  }
+
+  const hasNestedOutput = existingRanges.some(
+    (range) =>
+      range.start >= chunk.start &&
+      range.end <= chunk.end &&
+      (range.start !== chunk.start || range.end !== chunk.end)
+  );
+  if (hasNestedOutput && chunk.files.length > 1) {
+    console.log(`${context.label}: existing adaptive split detected; resuming split output`);
+    const children = splitChunkInHalf(chunk);
+    const resolved = [];
+    for (const child of children) {
+      resolved.push(...(await resolveAdaptiveChunks(set, child, options, existingRanges)));
+    }
+    return resolved;
+  }
+
+  try {
+    const { zipResult, pdfResult } = await prepareChunk(context, chunk, options);
+    return [{ chunk, context, zipResult, pdfResult, reused: false }];
+  } catch (error) {
+    if (!(error instanceof AssetSizeLimitError) || chunk.files.length <= 1) {
+      throw error;
+    }
+
+    const children = splitChunkInHalf(chunk);
+    console.log(
+      `${context.label}: ${error.kind}が目標サイズを超えたため ` +
+        `(${formatBytes(error.actualBytes)} > ${formatBytes(options.targetBytes)})、` +
+        `${children[0].files.length}枚と${children[1].files.length}枚へ自動分割して再試行します。`
+    );
+    const resolved = [];
+    for (const child of children) {
+      resolved.push(...(await resolveAdaptiveChunks(set, child, options, existingRanges)));
+    }
+    return resolved;
+  }
+}
+
+async function findExistingOutputRanges(set, options) {
+  const outputCategoryDir = path.join(options.outputDir, set.category);
+  const entries = await fs.readdir(outputCategoryDir, { withFileTypes: true }).catch((error) => {
+    if (error.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  });
+  const escapedName = escapeRegExp(set.name);
+  const rangePattern = new RegExp(
+    `^${escapedName}_(\\d+)-(\\d+)(?:\\.(?:zip|pdf|assets\\.json)|_jpg)$`,
+    "i"
+  );
+  const unique = new Map();
+
+  for (const entry of entries) {
+    const match = entry.name.match(rangePattern);
+    if (!match) {
+      continue;
+    }
+    const start = Number(match[1]);
+    const end = Number(match[2]);
+    if (start < 1 || end < start || end > set.files.length) {
+      continue;
+    }
+    unique.set(`${start}-${end}`, { start, end });
+  }
+
+  return Array.from(unique.values());
 }
 
 async function assertNoObsoleteOutputs(set, chunks, options) {
@@ -352,7 +455,7 @@ async function assertNoObsoleteOutputs(set, chunks, options) {
   }
 }
 
-async function buildChunk(set, chunk, options) {
+async function createChunkContext(set, chunk, options) {
   const outputCategoryDir = path.join(options.outputDir, set.category);
   const outputBaseName = getOutputBaseName(set.name, chunk, set.files.length);
   const zipPath = path.join(outputCategoryDir, `${outputBaseName}.zip`);
@@ -362,38 +465,55 @@ async function buildChunk(set, chunk, options) {
   const label = `[${set.category}] ${outputBaseName}`;
   const sourceSignature = await createSourceSignature(chunk.files);
 
-  if (!options.force && (await exists(zipPath)) && (await exists(pdfPath))) {
-    const [zipStat, pdfStat] = await Promise.all([fs.stat(zipPath), fs.stat(pdfPath)]);
+  return {
+    outputBaseName,
+    zipPath,
+    pdfPath,
+    profilePath,
+    jpgDir,
+    label,
+    sourceSignature,
+  };
+}
+
+async function chunkOutputIsReusable(context, chunk, options) {
+  if ((await exists(context.zipPath)) && (await exists(context.pdfPath))) {
+    const [zipStat, pdfStat] = await Promise.all([
+      fs.stat(context.zipPath),
+      fs.stat(context.pdfPath),
+    ]);
     if (
       zipStat.size <= options.targetBytes &&
       pdfStat.size <= options.targetBytes &&
       (await outputProfileMatches(
-        profilePath,
+        context.profilePath,
         options,
         chunk.files.length,
-        sourceSignature,
-        zipPath,
-        pdfPath,
+        context.sourceSignature,
+        context.zipPath,
+        context.pdfPath,
         zipStat,
         pdfStat
       ))
     ) {
-      console.log(`${label}: already built with the current profile under target; skipping`);
-      return;
+      return true;
     }
   }
+  return false;
+}
 
+async function prepareChunk(context, chunk, options) {
   console.log("");
-  console.log(`${label}: optimizing ${chunk.files.length} image(s)...`);
-  const zipResult = await findWebpZip(outputBaseName, chunk.files, options);
-  const pdfResult = await findJpegPdf(outputBaseName, chunk.files, options);
+  console.log(`${context.label}: optimizing ${chunk.files.length} image(s)...`);
+  const zipResult = await findWebpZip(context.outputBaseName, chunk.files, options);
+  const pdfResult = await findJpegPdf(context.outputBaseName, chunk.files, options);
 
   console.log(
-    `${label}: ZIP selected source-resolution WebP quality ${zipResult.quality} / ` +
+    `${context.label}: ZIP selected source-resolution WebP quality ${zipResult.quality} / ` +
       `${formatBytes(zipResult.buffer.length)}`
   );
   console.log(
-    `${label}: PDF selected JPEG quality ${pdfResult.quality} / ` +
+    `${context.label}: PDF selected JPEG quality ${pdfResult.quality} / ` +
       `${pdfResult.longEdge}px / ${formatBytes(pdfResult.buffer.length)}`
   );
 
@@ -401,34 +521,48 @@ async function buildChunk(set, chunk, options) {
   const pdfSize = pdfResult.buffer.length;
   if (zipSize > options.targetBytes || pdfSize > options.targetBytes) {
     throw new Error(
-      `${outputBaseName} could not be reduced under ${formatBytes(options.targetBytes)}. ` +
+      `${context.outputBaseName} could not be reduced under ${formatBytes(options.targetBytes)}. ` +
         `zip=${formatBytes(zipSize)}, pdf=${formatBytes(pdfSize)}.`
     );
   }
 
+  return { zipResult, pdfResult };
+}
+
+async function writePreparedChunk(context, zipResult, pdfResult, options) {
   if (options.keepJpgs) {
-    await fs.rm(jpgDir, { recursive: true, force: true });
-    await fs.mkdir(jpgDir, { recursive: true });
+    await fs.rm(context.jpgDir, { recursive: true, force: true });
+    await fs.mkdir(context.jpgDir, { recursive: true });
     for (const image of pdfResult.images) {
-      await fs.writeFile(path.join(jpgDir, image.name), image.buffer);
+      await fs.writeFile(path.join(context.jpgDir, image.name), image.buffer);
     }
   }
 
   const profileBuffer = Buffer.from(
     `${JSON.stringify(
-      createOutputProfile(options, chunk.files.length, sourceSignature, zipResult, pdfResult),
+      createOutputProfile(
+        options,
+        pdfResult.images.length,
+        context.sourceSignature,
+        zipResult,
+        pdfResult
+      ),
       null,
       2
     )}\n`,
     "utf8"
   );
   await writeOutputSetAtomically(
-    { zipPath, pdfPath, profilePath },
+    {
+      zipPath: context.zipPath,
+      pdfPath: context.pdfPath,
+      profilePath: context.profilePath,
+    },
     { zipBuffer: zipResult.buffer, pdfBuffer: pdfResult.buffer, profileBuffer }
   );
 
-  console.log(`${label}: zip ${formatBytes(zipSize)} -> ${zipPath}`);
-  console.log(`${label}: pdf ${formatBytes(pdfSize)} -> ${pdfPath}`);
+  console.log(`${context.label}: zip ${formatBytes(zipResult.buffer.length)} -> ${context.zipPath}`);
+  console.log(`${context.label}: pdf ${formatBytes(pdfResult.buffer.length)} -> ${context.pdfPath}`);
 }
 
 async function findWebpZip(label, files, options) {
@@ -474,11 +608,12 @@ async function findWebpZip(label, files, options) {
     return best;
   }
 
-  throw new Error(
+  throw new AssetSizeLimitError(
     `${label}: ZIP用WebPを最低品質 ${options.zipWebpMinQuality} まで下げても ` +
       `${formatBytes(smallest?.buffer.length || 0)} あり、目標の ` +
-      `${formatBytes(options.targetBytes)} を超えています。` +
-      "GUIの「ZIP WebP 最低品質」をさらに下げるか、1組あたりの最大枚数を減らしてください。"
+      `${formatBytes(options.targetBytes)} を超えています。`,
+    "ZIP",
+    smallest?.buffer.length || 0
   );
 }
 
@@ -508,12 +643,14 @@ async function findJpegPdf(label, files, options) {
     }
   }
 
-  throw new Error(
-    `${label}: the JPEG PDF is ${formatBytes(smallest?.buffer.length || 0)} at quality ` +
-      `${smallest?.quality || options.pdfJpegQuality} / ` +
-      `${smallest?.longEdge || options.pdfMinLongEdge}px, above the ` +
-      `${formatBytes(options.targetBytes)} target. Lower --pdf-min-long-edge or ` +
-      "--pdf-jpeg-quality if necessary."
+  throw new AssetSizeLimitError(
+    `${label}: PDFを最低設定（JPEG品質 ` +
+      `${smallest?.quality || options.pdfJpegQuality} / 長辺 ` +
+      `${smallest?.longEdge || options.pdfMinLongEdge}px）まで下げても ` +
+      `${formatBytes(smallest?.buffer.length || 0)} あり、目標の ` +
+      `${formatBytes(options.targetBytes)} を超えています。`,
+    "PDF",
+    smallest?.buffer.length || 0
   );
 }
 
@@ -738,6 +875,24 @@ function splitFileChunks(files, chunkSize, minTailSize = null) {
   }
 
   return chunks;
+}
+
+function splitChunkInHalf(chunk) {
+  const leftSize = Math.ceil(chunk.files.length / 2);
+  const leftFiles = chunk.files.slice(0, leftSize);
+  const rightFiles = chunk.files.slice(leftSize);
+  return [
+    {
+      start: chunk.start,
+      end: chunk.start + leftFiles.length - 1,
+      files: leftFiles,
+    },
+    {
+      start: chunk.start + leftFiles.length,
+      end: chunk.end,
+      files: rightFiles,
+    },
+  ];
 }
 
 function getEffectiveMinTailSize(chunkSize, minTailSize) {
@@ -1035,7 +1190,7 @@ Options:
   --set <name>            Build only one image set
   --limit <n>             Build only the first n image sets
   --target-mib <n>        Max size for each zip/pdf. Default: 9.8
-  --chunk-size <n>        Split each image set into chunks of n images. Default: 100
+  --chunk-size <n>        Maximum images per chunk; oversized chunks auto-split. Default: 100
   --min-tail-size <n>     Merge final chunk when it has n or fewer images. Default: 10% of chunk size
   --zip-webp-quality <n>  Baseline WebP quality for ZIP images. Default: 75
   --zip-webp-max-quality <n> Highest WebP quality used when size allows. Default: 85
