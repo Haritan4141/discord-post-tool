@@ -1,15 +1,43 @@
 const { app, BrowserWindow, dialog, ipcMain } = require("electron");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs/promises");
+const fsSync = require("node:fs");
 const path = require("node:path");
+const { projectProfilePath, migrateLocalStorage } = require("./project-profile");
+const { discordFetch } = require("../discord-request");
 
 const ROOT_DIR = path.resolve(__dirname, "..", "..");
 const CLI_SCRIPT = path.join(ROOT_DIR, "src", "cli.js");
 const BUILD_ASSETS_SCRIPT = path.join(ROOT_DIR, "src", "build-assets.js");
 const DISCORD_API_BASE = "https://discord.com/api/v10";
+const SMOKE_TEST = process.argv.includes("--smoke-test");
+const legacyUserData = app.getPath("userData");
+const profileDir = projectProfilePath(ROOT_DIR, legacyUserData);
+fsSync.mkdirSync(profileDir, { recursive: true });
+app.setPath("userData", profileDir);
+app.setPath("sessionData", profileDir);
+const ownsProfile = app.requestSingleInstanceLock();
 
 let mainWindow = null;
 let activeJob = null;
+
+if (!ownsProfile) {
+  app.quit();
+} else {
+  try {
+    migrateLocalStorage(legacyUserData, profileDir);
+  } catch (error) {
+    dialog.showErrorBox("設定の引き継ぎに失敗しました", error.message +
+      "\n旧版のアプリをすべて終了してから、再起動してください。");
+    app.exit(1);
+  }
+  app.on("second-instance", (_event, argv) => {
+    if (argv.includes("--smoke-test") || !mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -20,6 +48,7 @@ function createWindow() {
     title: "Discord Post Tool",
     backgroundColor: "#f4f5f7",
     autoHideMenuBar: true,
+    show: !SMOKE_TEST,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -30,14 +59,32 @@ function createWindow() {
 
   mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
 
-  if (process.argv.includes("--smoke-test")) {
-    mainWindow.webContents.once("did-finish-load", () => {
-      setTimeout(() => app.quit(), 300);
+  if (SMOKE_TEST) {
+    mainWindow.webContents.once("did-finish-load", async () => {
+      try {
+        const ready = await mainWindow.webContents.executeJavaScript(`new Promise((resolve) => {
+          const started = Date.now();
+          const check = () => {
+            if (document.documentElement.dataset.ready === "true") return resolve(true);
+            if (Date.now() - started > 5000) return resolve(false);
+            setTimeout(check, 25);
+          };
+          check();
+        })`);
+        if (!ready) throw new Error("Renderer initialization timed out");
+        console.log(JSON.stringify({ rootDir: ROOT_DIR, userData: app.getPath("userData"),
+          sessionData: app.getPath("sessionData"), ready }));
+        setTimeout(() => app.quit(), 2500);
+      } catch (error) {
+        console.error(error.message);
+        app.exit(1);
+      }
     });
   }
 }
 
 app.whenReady().then(() => {
+  if (!ownsProfile) return;
   registerIpc();
   createWindow();
 });
@@ -49,7 +96,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
+  if (ownsProfile && BrowserWindow.getAllWindows().length === 0) {
     createWindow();
   }
 });
@@ -65,6 +112,7 @@ function registerIpc() {
     const env = await readDotEnv(path.join(ROOT_DIR, ".env"));
     return {
       rootDir: ROOT_DIR,
+      smokeTest: SMOKE_TEST,
       rawImagesDir: path.join(ROOT_DIR, "raw_images"),
       optimizedDir: path.join(ROOT_DIR, "optimized_webp_pdf"),
       hasBotToken: Boolean(env.DISCORD_BOT_TOKEN || process.env.DISCORD_BOT_TOKEN),
@@ -286,11 +334,9 @@ async function getGuildInfo(request = {}) {
     throw new Error("Bot Tokenを入力するか、.envにDISCORD_BOT_TOKENを設定してください。");
   }
 
-  const response = await fetch(`${DISCORD_API_BASE}/guilds/${encodeURIComponent(guildId)}`, {
-    headers: {
-      Authorization: `Bot ${botToken}`,
-    },
-  });
+  const response = await discordFetch(
+    botToken, `${DISCORD_API_BASE}/guilds/${encodeURIComponent(guildId)}`
+  );
 
   if (!response.ok) {
     const detail = await readDiscordError(response);

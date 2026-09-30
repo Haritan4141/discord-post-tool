@@ -2,12 +2,16 @@
 
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const crypto = require("node:crypto");
+const { withResources, canonicalPath } = require("./runtime-locks");
+const { discordFetch } = require("./discord-request");
 
 const API_BASE = "https://discord.com/api/v10";
 const CHANNEL_TYPES = {
   GUILD_TEXT: 0,
   GUILD_CATEGORY: 4,
 };
+const MANIFEST_STAGING_DIR_NAME = ".discord-post-tool-manifest-staging";
 
 class DiscordApiError extends Error {
   constructor(message, status, body) {
@@ -38,39 +42,19 @@ class DiscordApi {
       body = options.form;
     }
 
-    for (let attempt = 1; attempt <= 8; attempt += 1) {
-      const response = await fetch(url, {
-        method,
-        headers,
-        body,
-      });
-
-      if (response.status === 429) {
-        const retryAfter = await readRetryAfter(response);
-        console.log(`Rate limited. Waiting ${retryAfter.toFixed(2)}s...`);
-        await sleep(Math.ceil(retryAfter * 1000) + 250);
-        continue;
-      }
-
-      const responseText = await response.text();
-      if (!response.ok) {
-        throw new DiscordApiError(
-          `${method} ${route} failed with HTTP ${response.status}`,
-          response.status,
-          responseText
-        );
-      }
-
-      await respectRateLimitHeaders(response);
-
-      if (response.status === 204 || responseText.trim() === "") {
-        return null;
-      }
-
-      return JSON.parse(responseText);
+    const response = await discordFetch(this.token, url, { method, headers, body }, {
+      onRateLimit: (seconds) => console.log(`Rate limited. Waiting ${seconds.toFixed(2)}s...`),
+    });
+    const responseText = await response.text();
+    if (!response.ok) {
+      throw new DiscordApiError(
+        `${method} ${route} failed with HTTP ${response.status}`,
+        response.status,
+        responseText
+      );
     }
-
-    throw new Error(`${method} ${route} failed after repeated rate limit retries.`);
+    if (response.status === 204 || responseText.trim() === "") return null;
+    return JSON.parse(responseText);
   }
 
   getGuildChannels(guildId) {
@@ -113,7 +97,7 @@ class DiscordApi {
   }
 }
 
-async function main() {
+async function main(options = {}) {
   await loadDotEnv(path.resolve(process.cwd(), ".env"));
 
   const args = parseArgs(process.argv.slice(2));
@@ -145,53 +129,48 @@ async function main() {
     String(args.manifest || ".discord-post-tool-manifest.json")
   );
 
-  const plan = await buildLocalPlan(inputDir, {
-    categoryFilter,
-    limit,
-    maxFileBytes: mibToBytes(maxFileMiB),
-    maxRequestBytes: mibToBytes(maxRequestMiB),
-  });
-
-  printPlan(plan, {
-    uploadMode,
-    maxFileMiB,
-    maxRequestMiB,
-    categoryFilter,
-    limit,
-  });
-
-  if (command === "plan") {
-    return;
-  }
-
   const guildId = String(args.guild || process.env.DISCORD_GUILD_ID || "").trim();
   const token = String(args.token || process.env.DISCORD_BOT_TOKEN || "").trim();
-
-  if (!guildId) {
-    throw new Error("Guild ID is required. Use --guild or DISCORD_GUILD_ID.");
+  const manifestWritePlan = command === "run"
+    ? await createManifestWritePlan(manifestPath)
+    : null;
+  const resources = [{ type: "path", path: inputDir, mode: "read" }];
+  if (command === "run") {
+    if (!guildId) {
+      throw new Error("Guild ID is required. Use --guild or DISCORD_GUILD_ID.");
+    }
+    if (!token) {
+      throw new Error("Bot token is required. Use --token or DISCORD_BOT_TOKEN.");
+    }
+    if (!args.yes && !args.y) {
+      throw new Error("Run requires --yes to avoid accidental channel creation/uploads.");
+    }
+    resources.push(
+      { type: "guild", key: guildId },
+      { type: "path", path: manifestWritePlan.manifestPath, mode: "write" },
+      { type: "path", path: manifestWritePlan.stagingDir, mode: "write" }
+    );
   }
-  if (!token) {
-    throw new Error("Bot token is required. Use --token or DISCORD_BOT_TOKEN.");
-  }
-  if (!args.yes && !args.y) {
-    throw new Error("Run requires --yes to avoid accidental channel creation/uploads.");
-  }
-
-  assertRunnablePlan(plan);
-
-  const manifest = await loadManifest(manifestPath);
-  const api = new DiscordApi(token);
-
-  await executePlan({
-    api,
-    guildId,
-    plan,
-    manifest,
-    manifestPath,
-    uploadMode,
-    remoteCheck,
-    recreateMissing,
-    maxRequestBytes: mibToBytes(maxRequestMiB),
+  await withResources(resources, async () => {
+    const plan = await buildLocalPlan(inputDir, {
+      categoryFilter,
+      limit,
+      maxFileBytes: mibToBytes(maxFileMiB),
+      maxRequestBytes: mibToBytes(maxRequestMiB),
+    });
+    printPlan(plan, { uploadMode, maxFileMiB, maxRequestMiB, categoryFilter, limit });
+    if (command === "plan") return;
+    assertRunnablePlan(plan);
+    await validateGeneratedOutputs(plan);
+    const manifest = await loadManifest(manifestWritePlan.manifestPath);
+    const api = options.apiFactory ? options.apiFactory(token) : new DiscordApi(token);
+    await executePlan({
+      api, guildId, plan, manifest, manifestPath: manifestWritePlan.manifestPath, uploadMode, remoteCheck,
+      recreateMissing, maxRequestBytes: mibToBytes(maxRequestMiB),
+    });
+  }, {
+    runtimeDir: options.runtimeDir,
+    label: command === "run" ? "Discord投稿" : "投稿計画",
   });
 }
 
@@ -205,6 +184,7 @@ async function buildLocalPlan(inputDir, options) {
   const categoryDirs = entries
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
+    .filter((name) => !isManifestStagingDirectory(name))
     .filter((name) => !options.categoryFilter || name === options.categoryFilter)
     .sort(compareNames);
 
@@ -327,6 +307,12 @@ async function buildLocalPlan(inputDir, options) {
     categories,
     totals,
   };
+}
+
+function isManifestStagingDirectory(name) {
+  return process.platform === "win32"
+    ? name.toLowerCase() === MANIFEST_STAGING_DIR_NAME.toLowerCase()
+    : name === MANIFEST_STAGING_DIR_NAME;
 }
 
 function assignUniqueChannelNames(groups) {
@@ -508,6 +494,121 @@ function assertRunnablePlan(plan) {
   if (problems.length > 0) {
     throw new Error(`Cannot run because the plan has blocking issue(s):\n${problems.join("\n")}`);
   }
+}
+
+async function validateGeneratedOutputs(plan) {
+  const problems = [];
+
+  for (const category of plan.categories) {
+    for (const group of category.groups) {
+      const plannedFiles = groupFiles(group);
+      if (plannedFiles.length > 0) {
+        const categoryDir = path.dirname(plannedFiles[0].path);
+        const pendingBases = new Set([
+          group.baseName,
+          ...plannedFiles.map((file) => file.fileBaseName),
+        ]);
+        for (const pendingBase of pendingBases) {
+          const setPendingPath = path.join(categoryDir, `${pendingBase}.assets.pending`);
+          if (await pathExists(setPendingPath)) {
+            problems.push(
+              `${setPendingPath}: 作品全体の変換が未確定です。全分割出力の再変換が完了するまで投稿できません。`
+            );
+          }
+        }
+      }
+
+      const byBaseName = new Map();
+      for (const file of plannedFiles) {
+        if (!byBaseName.has(file.fileBaseName)) {
+          byBaseName.set(file.fileBaseName, []);
+        }
+        byBaseName.get(file.fileBaseName).push(file);
+      }
+
+      for (const [baseName, files] of byBaseName) {
+        const categoryDir = path.dirname(files[0].path);
+        const pendingPath = path.join(categoryDir, `${baseName}.pending`);
+        if (await pathExists(pendingPath)) {
+          problems.push(`${pendingPath}: 変換中または未確定の出力です。再変換が完了するまで投稿できません。`);
+        }
+
+        const profilePath = path.join(categoryDir, `${baseName}.assets.json`);
+        if (!(await pathExists(profilePath))) {
+          // Files without a profile are legacy/manual inputs and remain supported.
+          continue;
+        }
+
+        const zipFiles = files.filter((file) => file.type === "zip");
+        const pdfFiles = files.filter((file) => file.type === "pdf");
+        if (zipFiles.length !== 1 || pdfFiles.length !== 1) {
+          problems.push(
+            `${profilePath}: assets.jsonがある生成物は、同じ名前のzip/pdf pairが必要です。`
+          );
+          continue;
+        }
+
+        try {
+          const profile = JSON.parse(await fs.readFile(profilePath, "utf8"));
+          const [zipStat, pdfStat] = await Promise.all([
+            fs.stat(zipFiles[0].path),
+            fs.stat(pdfFiles[0].path),
+          ]);
+          const [zipBuffer, pdfBuffer] = await Promise.all([
+            fs.readFile(zipFiles[0].path),
+            fs.readFile(pdfFiles[0].path),
+          ]);
+          const profileMatches =
+            profile.zip?.bytes === zipStat.size &&
+            profile.pdf?.bytes === pdfStat.size &&
+            typeof profile.zip?.sha256 === "string" &&
+            typeof profile.pdf?.sha256 === "string" &&
+            hashBuffer(zipBuffer) === profile.zip.sha256 &&
+            hashBuffer(pdfBuffer) === profile.pdf.sha256;
+          if (!profileMatches) {
+            problems.push(`${profilePath}: profileとzip/pdfのサイズまたはSHA-256が一致しません。`);
+          }
+        } catch (error) {
+          problems.push(`${profilePath}: profileを検証できません (${getErrorMessage(error)}).`);
+        }
+      }
+    }
+  }
+
+  if (problems.length > 0) {
+    throw new Error(
+      [
+        "生成済み出力の整合性検証に失敗したため、Discord APIへ接続せず停止しました。",
+        ...problems.map((problem) => `- ${problem}`),
+        "変換を完了してprofileを再生成するか、手動入力ではassets.jsonとpending markerを確認してください。",
+      ].join("\n")
+    );
+  }
+}
+
+async function createManifestWritePlan(manifestPath) {
+  const resolvedManifestPath = path.resolve(manifestPath);
+  const canonicalManifestPath = await canonicalPath(manifestPath);
+  const reservedName = process.platform === "win32"
+    ? MANIFEST_STAGING_DIR_NAME.toLowerCase()
+    : MANIFEST_STAGING_DIR_NAME;
+  const hasReservedSegment = [resolvedManifestPath, canonicalManifestPath].some((candidate) =>
+    candidate
+      .split(path.sep)
+      .some((segment) => (process.platform === "win32" ? segment.toLowerCase() : segment) === reservedName)
+  );
+  if (hasReservedSegment) {
+    throw new Error(
+      `Manifest path is inside the reserved staging directory and cannot be used: ${manifestPath}`
+    );
+  }
+
+  const stagingRoot = path.join(path.dirname(canonicalManifestPath), MANIFEST_STAGING_DIR_NAME);
+  const manifestHash = crypto.createHash("sha256").update(canonicalManifestPath).digest("hex");
+  return {
+    manifestPath: canonicalManifestPath,
+    stagingDir: path.join(stagingRoot, manifestHash),
+  };
 }
 
 async function executePlan(context) {
@@ -892,10 +993,20 @@ async function loadManifest(manifestPath) {
 }
 
 async function saveManifest(manifestPath, manifest) {
-  await fs.mkdir(path.dirname(manifestPath), { recursive: true });
-  const tmpPath = `${manifestPath}.tmp`;
-  await fs.writeFile(tmpPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-  await fs.rename(tmpPath, manifestPath);
+  const writePlan = await createManifestWritePlan(manifestPath);
+  await fs.mkdir(path.dirname(writePlan.manifestPath), { recursive: true });
+  await fs.mkdir(writePlan.stagingDir, { recursive: true });
+  const tmpPath = path.join(writePlan.stagingDir, `${crypto.randomUUID()}.tmp`);
+  try {
+    await fs.writeFile(tmpPath, `${JSON.stringify(manifest, null, 2)}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    await fs.rename(tmpPath, writePlan.manifestPath);
+  } finally {
+    await fs.rm(tmpPath, { force: true }).catch(() => {});
+  }
 }
 
 function ensureGuildManifest(manifest, guildId) {
@@ -966,27 +1077,6 @@ function looksLikeUploadSizeError(error) {
     body.includes("file size") ||
     body.includes("payload too large")
   );
-}
-
-async function readRetryAfter(response) {
-  const retryHeader = response.headers.get("retry-after");
-  if (retryHeader) {
-    return Number(retryHeader);
-  }
-
-  const body = await response.json().catch(() => ({}));
-  return Number(body.retry_after || 1);
-}
-
-async function respectRateLimitHeaders(response) {
-  const remaining = response.headers.get("x-ratelimit-remaining");
-  const resetAfter = response.headers.get("x-ratelimit-reset-after");
-  if (remaining === "0" && resetAfter) {
-    const seconds = Number(resetAfter);
-    if (Number.isFinite(seconds) && seconds > 0 && seconds < 5) {
-      await sleep(Math.ceil(seconds * 1000) + 100);
-    }
-  }
 }
 
 async function loadDotEnv(envPath) {
@@ -1089,16 +1179,30 @@ function sumSizes(files) {
   return files.reduce((sum, file) => sum + file.size, 0);
 }
 
+async function pathExists(file) {
+  try {
+    await fs.access(file);
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function hashBuffer(buffer) {
+  return crypto.createHash("sha256").update(buffer).digest("hex");
+}
+
+function getErrorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function formatBytes(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 }
 
 function mibToBytes(mib) {
   return mib * 1024 * 1024;
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function printHelp() {
@@ -1132,11 +1236,13 @@ Options:
 `);
 }
 
-main().catch((error) => {
-  console.error("");
-  console.error(error.message);
-  if (error instanceof DiscordApiError && error.body) {
-    console.error(error.body);
-  }
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error("");
+    console.error(error.message);
+    if (error instanceof DiscordApiError && error.body) console.error(error.body);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { main, DiscordApi };

@@ -14,9 +14,10 @@ const elements = {};
 document.addEventListener("DOMContentLoaded", async () => {
   bindElements();
   bindEvents();
-  await hydrateDefaults();
+  const defaults = await hydrateDefaults();
   restoreLocalState();
-  refreshGuildName({ silent: true });
+  document.documentElement.dataset.ready = "true";
+  if (!defaults.smokeTest) refreshGuildName({ silent: true });
 });
 
 function bindElements() {
@@ -117,6 +118,7 @@ async function hydrateDefaults() {
   elements.postGuildId.value ||= defaults.guildId;
   elements.tokenStatus.textContent = defaults.hasBotToken ? "設定済み" : "未設定";
   elements.guildStatus.textContent = defaults.guildId ? "設定済み" : "未設定";
+  return defaults;
 }
 
 function switchTab(tab) {

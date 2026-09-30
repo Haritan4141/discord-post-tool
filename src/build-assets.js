@@ -7,6 +7,7 @@ const path = require("node:path");
 const sharp = require("sharp");
 const yazl = require("yazl");
 const { PDFDocument } = require("pdf-lib");
+const { withResources } = require("./runtime-locks");
 
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 const SOURCE_RANK = {
@@ -35,7 +36,7 @@ class AssetSizeLimitError extends Error {
   }
 }
 
-async function main() {
+async function main(options = {}) {
   const args = parseArgs(process.argv.slice(2));
   const command = args._[0] || "plan";
 
@@ -124,61 +125,34 @@ async function main() {
     );
   }
 
-  const sets = await discoverImageSets(inputDir, {
-    fallbackCategory: categoryName,
-    setFilter,
-  });
-  const selectedSets = limit === null ? sets : sets.slice(0, limit);
-
-  printBuildPlan(selectedSets, {
-    inputDir,
-    outputDir,
-    targetMiB,
-    zipWebpQuality,
-    zipWebpMinQuality,
-    zipWebpMaxQuality,
-    pdfJpegQuality,
-    pdfJpegMaxQuality,
-    pdfLongEdge,
-    pdfMaxLongEdge,
-    pdfMinLongEdge,
-    concurrency,
-    chunkSize,
-    minTailSize,
-    limit,
-    setFilter,
-  });
-
-  if (command === "plan") {
-    return;
-  }
-
-  if (selectedSets.length === 0) {
-    throw new Error("No image sets found.");
-  }
-
-  await validateInputImages(selectedSets, concurrency);
-
-  for (const set of selectedSets) {
-    await buildSet(set, {
-      outputDir,
-      targetBytes: mibToBytes(targetMiB),
-      targetMiB,
-      zipWebpQuality,
-      zipWebpMinQuality,
-      zipWebpMaxQuality,
-      pdfJpegQuality,
-      pdfJpegMaxQuality,
-      pdfLongEdge,
-      pdfMaxLongEdge,
-      pdfMinLongEdge,
-      concurrency,
-      chunkSize,
-      minTailSize,
-      keepJpgs,
-      force,
+  const resources = [{ type: "path", path: inputDir, mode: "read" }];
+  if (command === "run") resources.push({ type: "path", path: outputDir, mode: "write" });
+  await withResources(resources, async () => {
+    const sets = await discoverImageSets(inputDir, {
+      fallbackCategory: categoryName,
+      setFilter,
     });
-  }
+    const selectedSets = limit === null ? sets : sets.slice(0, limit);
+    printBuildPlan(selectedSets, {
+      inputDir, outputDir, targetMiB, zipWebpQuality, zipWebpMinQuality,
+      zipWebpMaxQuality, pdfJpegQuality, pdfJpegMaxQuality, pdfLongEdge,
+      pdfMaxLongEdge, pdfMinLongEdge, concurrency, chunkSize, minTailSize, limit, setFilter,
+    });
+    if (command === "plan") return;
+    if (selectedSets.length === 0) throw new Error("No image sets found.");
+    await validateInputImages(selectedSets, concurrency);
+    for (const set of selectedSets) {
+      await buildSet(set, {
+        outputDir, targetBytes: mibToBytes(targetMiB), targetMiB,
+        zipWebpQuality, zipWebpMinQuality, zipWebpMaxQuality,
+        pdfJpegQuality, pdfJpegMaxQuality, pdfLongEdge, pdfMaxLongEdge, pdfMinLongEdge,
+        concurrency, chunkSize, minTailSize, keepJpgs, force,
+      });
+    }
+  }, {
+    runtimeDir: options.runtimeDir,
+    label: command === "run" ? "画像変換" : "画像変換計画",
+  });
 }
 
 async function discoverImageSets(inputDir, options) {
@@ -339,12 +313,34 @@ async function buildSet(set, options) {
     options
   );
 
+  const setPendingPath = getSetPendingPath(set, options);
+  const needsSetMarker =
+    (await exists(setPendingPath)) || resolvedChunks.some((resolved) => !resolved.reused);
+  if (needsSetMarker) {
+    await writeSetPendingMarker(set, options);
+  }
+
   for (const resolved of resolvedChunks) {
     if (resolved.reused) {
       console.log(`${resolved.context.label}: already built with the current profile under target; skipping`);
       continue;
     }
-    await writePreparedChunk(resolved.context, resolved.zipResult, resolved.pdfResult, options);
+    await writePreparedChunk(
+      resolved.context,
+      resolved.chunk,
+      resolved.zipResult,
+      resolved.pdfResult,
+      options
+    );
+  }
+
+  await removeObsoletePendingMarkers(
+    set,
+    resolvedChunks.map((resolved) => resolved.chunk),
+    options
+  );
+  if (needsSetMarker) {
+    await removeSetPendingMarker(set, options);
   }
 }
 
@@ -402,7 +398,7 @@ async function findExistingOutputRanges(set, options) {
   });
   const escapedName = escapeRegExp(set.name);
   const rangePattern = new RegExp(
-    `^${escapedName}_(\\d+)-(\\d+)(?:\\.(?:zip|pdf|assets\\.json)|_jpg)$`,
+    `^${escapedName}_(\\d+)-(\\d+)(?:\\.(?:zip|pdf|assets\\.json|pending)|_jpg)$`,
     "i"
   );
   const unique = new Map();
@@ -455,12 +451,57 @@ async function assertNoObsoleteOutputs(set, chunks, options) {
   }
 }
 
+async function removeObsoletePendingMarkers(set, chunks, options) {
+  const outputCategoryDir = path.join(options.outputDir, set.category);
+  const entries = await fs.readdir(outputCategoryDir, { withFileTypes: true }).catch((error) => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  });
+  const expectedBaseNames = new Set(
+    chunks.map((chunk) => getOutputBaseName(set.name, chunk, set.files.length))
+  );
+  const escapedName = escapeRegExp(set.name);
+  const pendingPattern = new RegExp(`^(${escapedName}(?:_\\d+-\\d+)?)\\.pending$`, "i");
+  for (const entry of entries) {
+    const match = entry.name.match(pendingPattern);
+    if (match && !expectedBaseNames.has(match[1])) {
+      await fs.rm(path.join(outputCategoryDir, entry.name), { force: true });
+    }
+  }
+}
+
+function getSetPendingPath(set, options) {
+  const outputCategoryDir = path.join(options.outputDir, set.category);
+  return path.join(outputCategoryDir, `${set.name}.assets.pending`);
+}
+
+async function writeSetPendingMarker(set, options) {
+  const pendingPath = getSetPendingPath(set, options);
+  await fs.mkdir(path.dirname(pendingPath), { recursive: true });
+  await fs.writeFile(
+    pendingPath,
+    `${JSON.stringify({
+      version: 1,
+      outputBaseName: set.name,
+      markerType: "set",
+      pid: process.pid,
+      createdAt: new Date().toISOString(),
+    })}\n`,
+    { encoding: "utf8" }
+  );
+}
+
+async function removeSetPendingMarker(set, options) {
+  await fs.rm(getSetPendingPath(set, options), { force: true });
+}
+
 async function createChunkContext(set, chunk, options) {
   const outputCategoryDir = path.join(options.outputDir, set.category);
   const outputBaseName = getOutputBaseName(set.name, chunk, set.files.length);
   const zipPath = path.join(outputCategoryDir, `${outputBaseName}.zip`);
   const pdfPath = path.join(outputCategoryDir, `${outputBaseName}.pdf`);
   const profilePath = path.join(outputCategoryDir, `${outputBaseName}.assets.json`);
+  const pendingPath = path.join(outputCategoryDir, `${outputBaseName}.pending`);
   const jpgDir = path.join(outputCategoryDir, `${outputBaseName}_jpg`);
   const label = `[${set.category}] ${outputBaseName}`;
   const sourceSignature = await createSourceSignature(chunk.files);
@@ -470,6 +511,7 @@ async function createChunkContext(set, chunk, options) {
     zipPath,
     pdfPath,
     profilePath,
+    pendingPath,
     jpgDir,
     label,
     sourceSignature,
@@ -477,29 +519,34 @@ async function createChunkContext(set, chunk, options) {
 }
 
 async function chunkOutputIsReusable(context, chunk, options) {
-  if ((await exists(context.zipPath)) && (await exists(context.pdfPath))) {
-    const [zipStat, pdfStat] = await Promise.all([
-      fs.stat(context.zipPath),
-      fs.stat(context.pdfPath),
-    ]);
-    if (
-      zipStat.size <= options.targetBytes &&
-      pdfStat.size <= options.targetBytes &&
-      (await outputProfileMatches(
-        context.profilePath,
-        options,
-        chunk.files.length,
-        context.sourceSignature,
-        context.zipPath,
-        context.pdfPath,
-        zipStat,
-        pdfStat
-      ))
-    ) {
-      return true;
-    }
+  return outputSetMatches(context, chunk, options);
+}
+
+async function outputSetMatches(context, chunk, options, allowPending = false) {
+  if (!allowPending && (await exists(context.pendingPath))) {
+    return false;
   }
-  return false;
+  if (!(await exists(context.zipPath)) || !(await exists(context.pdfPath))) {
+    return false;
+  }
+
+  const [zipStat, pdfStat] = await Promise.all([
+    fs.stat(context.zipPath),
+    fs.stat(context.pdfPath),
+  ]);
+  if (zipStat.size > options.targetBytes || pdfStat.size > options.targetBytes) {
+    return false;
+  }
+  return outputProfileMatches(
+    context.profilePath,
+    options,
+    chunk.files.length,
+    context.sourceSignature,
+    context.zipPath,
+    context.pdfPath,
+    zipStat,
+    pdfStat
+  );
 }
 
 async function prepareChunk(context, chunk, options) {
@@ -529,7 +576,22 @@ async function prepareChunk(context, chunk, options) {
   return { zipResult, pdfResult };
 }
 
-async function writePreparedChunk(context, zipResult, pdfResult, options) {
+async function writePendingMarker(context) {
+  await fs.mkdir(path.dirname(context.pendingPath), { recursive: true });
+  await fs.writeFile(
+    context.pendingPath,
+    `${JSON.stringify({
+      version: 1,
+      outputBaseName: context.outputBaseName,
+      pid: process.pid,
+      createdAt: new Date().toISOString(),
+    })}\n`,
+    { encoding: "utf8" }
+  );
+}
+
+async function writePreparedChunk(context, chunk, zipResult, pdfResult, options) {
+  await writePendingMarker(context);
   if (options.keepJpgs) {
     await fs.rm(context.jpgDir, { recursive: true, force: true });
     await fs.mkdir(context.jpgDir, { recursive: true });
@@ -560,6 +622,12 @@ async function writePreparedChunk(context, zipResult, pdfResult, options) {
     },
     { zipBuffer: zipResult.buffer, pdfBuffer: pdfResult.buffer, profileBuffer }
   );
+
+  if (!(await outputSetMatches(context, chunk, options, true))) {
+    throw new Error(`${context.label}: output verification failed; pending marker was retained.`);
+  }
+  // The marker is intentionally removed only after the final set is verified.
+  await fs.rm(context.pendingPath, { force: true });
 
   console.log(`${context.label}: zip ${formatBytes(zipResult.buffer.length)} -> ${context.zipPath}`);
   console.log(`${context.label}: pdf ${formatBytes(pdfResult.buffer.length)} -> ${context.pdfPath}`);
@@ -1206,8 +1274,12 @@ Options:
 `);
 }
 
-main().catch((error) => {
-  console.error("");
-  console.error(error.message);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error("");
+    console.error(error.message);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { main };
