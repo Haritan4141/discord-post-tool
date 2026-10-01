@@ -146,15 +146,151 @@ test("failed atomic ticket publication never enters the action and cleans its cl
   const file = path.join(f.dir, "mutex");
   const directory = `${await canonicalPath(file)}.mutex-v2`;
   const original = fs.rename;
+  let attempts = 0;
   fs.rename = async (source, destination) => {
-    if (path.dirname(destination) === directory) throw Object.assign(new Error("fixture sharing violation"), { code: "EPERM" });
+    if (path.dirname(destination) === directory) {
+      attempts += 1;
+      throw Object.assign(new Error("fixture sharing violation"), { code: "EPERM" });
+    }
     return original(source, destination);
   };
   try {
     await assert.rejects(withFileMutex(file, async () => assert.fail("entered without publication")), /fixture sharing/);
   } finally { fs.rename = original; }
+  assert.equal(attempts, 21, "permanent sharing errors must have a finite retry limit");
   assert.deepEqual(await fs.readdir(directory), []);
   await withFileMutex(file, async () => {});
+});
+
+test("transient ticket errors retain the choosing claim and enter the action once", async (t) => {
+  const f = await fixture(t);
+  const original = fs.rename;
+  for (const code of ["EPERM", "EACCES", "EBUSY"]) {
+    const file = path.join(f.dir, code);
+    const directory = `${await canonicalPath(file)}.mutex-v2`;
+    let attempts = 0, entered = 0, choosing;
+    fs.rename = async (source, destination) => {
+      if (path.dirname(destination) !== directory) return original(source, destination);
+      attempts += 1;
+      const current = await fs.readFile(destination, "utf8");
+      choosing ||= current;
+      assert.equal(current, choosing, "retry must not remove or modify the choosing claim");
+      assert.equal(JSON.parse(current).ticket, null);
+      assert.ok(JSON.parse(await fs.readFile(source, "utf8")).ticket > 0);
+      if (attempts <= 3) throw Object.assign(new Error("fixture temporary sharing violation"), { code });
+      return original(source, destination);
+    };
+    try { await withFileMutex(file, async () => { entered += 1; }); }
+    finally { fs.rename = original; }
+    assert.equal(attempts, 4);
+    assert.equal(entered, 1);
+    assert.deepEqual(await fs.readdir(directory), []);
+  }
+});
+
+test("non-sharing ticket errors stop immediately and clean the claim", async (t) => {
+  const f = await fixture(t);
+  const file = path.join(f.dir, "mutex");
+  const directory = `${await canonicalPath(file)}.mutex-v2`;
+  const original = fs.rename;
+  let attempts = 0;
+  fs.rename = async (source, destination) => {
+    if (path.dirname(destination) === directory) {
+      attempts += 1;
+      throw Object.assign(new Error("fixture missing file"), { code: "ENOENT" });
+    }
+    return original(source, destination);
+  };
+  try {
+    await assert.rejects(withFileMutex(file, async () => assert.fail("entered after missing ticket")), { code: "ENOENT" });
+  } finally { fs.rename = original; }
+  assert.equal(attempts, 1);
+  assert.deepEqual(await fs.readdir(directory), []);
+});
+
+test("ticket retries cannot bypass a live owner in another process", async (t) => {
+  const f = await fixture(t);
+  const file = path.join(f.dir, "mutex");
+  const owner = childWorker(t, { ...f, file }, MUTEX_OWNER);
+  await owner.wait("locked");
+  const directory = `${await canonicalPath(file)}.mutex-v2`;
+  const [ownerName] = await fs.readdir(directory);
+  const ownerClaim = await fs.readFile(path.join(directory, ownerName), "utf8");
+  const original = fs.rename;
+  let attempts = 0, entered = 0, ticketPublished;
+  const ready = new Promise((resolve) => { ticketPublished = resolve; });
+  fs.rename = async (source, destination) => {
+    if (path.dirname(destination) !== directory) return original(source, destination);
+    attempts += 1;
+    if (attempts <= 3) throw Object.assign(new Error("fixture temporary sharing violation"), { code: "EPERM" });
+    await original(source, destination);
+    ticketPublished();
+  };
+  const pending = withFileMutex(file, async () => { entered += 1; });
+  const result = pending.then(() => null, (error) => error);
+  try {
+    await Promise.race([ready, result.then((error) => { if (error) throw error; })]);
+    await sleep(150);
+    assert.equal(entered, 0);
+    assert.equal(await fs.readFile(path.join(directory, ownerName), "utf8"), ownerClaim);
+    assert.equal((await fs.readdir(directory)).filter((name) => name.endsWith(".json")).length, 2);
+  } finally {
+    owner.child.send("release");
+    await owner.exited;
+    fs.rename = original;
+  }
+  assert.equal(await result, null);
+  assert.equal(attempts, 4);
+  assert.equal(entered, 1);
+  assert.deepEqual(await fs.readdir(directory), []);
+});
+
+test("Windows sharing violation recovers after a real file handle closes", { skip: process.platform !== "win32" }, async (t) => {
+  const f = await fixture(t);
+  const file = path.join(f.dir, "mutex");
+  const directory = `${await canonicalPath(file)}.mutex-v2`;
+  const original = fs.rename;
+  let holder, exited, releaseTimer, attempts = 0, sharingErrors = 0, entered = 0;
+  fs.rename = async (source, destination) => {
+    if (path.dirname(destination) !== directory) return original(source, destination);
+    attempts += 1;
+    if (!holder) {
+      const script = `$ErrorActionPreference='Stop'
+$handle=[System.IO.File]::Open($env:DPT_TEST_CLAIM,[System.IO.FileMode]::Open,[System.IO.FileAccess]::Read,[System.IO.FileShare]::ReadWrite)
+try { [Console]::Out.WriteLine('READY'); [Console]::Out.Flush(); [Console]::In.ReadLine() | Out-Null } finally { $handle.Dispose() }`;
+      holder = spawn("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand",
+        Buffer.from(script, "utf16le").toString("base64")], { cwd: f.dir, windowsHide: true,
+        env: { ...process.env, DPT_TEST_CLAIM: destination }, stdio: ["pipe", "pipe", "pipe"] });
+      exited = new Promise((resolve, reject) => { holder.once("error", reject); holder.once("close", resolve); });
+      fixtureWorkers.get(f.dir).add({ child: holder, exited });
+      let output = "";
+      holder.stderr.on("data", (data) => { output += data; });
+      await new Promise((resolve, reject) => {
+        let stdout = "";
+        const timer = setTimeout(() => reject(new Error(`File holder readiness timeout: ${output}`)), 5000);
+        holder.stdout.on("data", (data) => {
+          stdout += data;
+          if (stdout.includes("READY")) { clearTimeout(timer); resolve(); }
+        });
+        holder.once("error", (error) => { clearTimeout(timer); reject(error); });
+        holder.once("close", () => { clearTimeout(timer); if (!stdout.includes("READY")) reject(new Error(output)); });
+      });
+      releaseTimer = setTimeout(() => holder.stdin.end("release\n"), 250);
+    }
+    try { return await original(source, destination); }
+    catch (error) { if (error.code === "EPERM") sharingErrors += 1; throw error; }
+  };
+  try { await withFileMutex(file, async () => { entered += 1; }); }
+  finally {
+    fs.rename = original;
+    clearTimeout(releaseTimer);
+    if (holder && !holder.stdin.writableEnded) holder.stdin.end("release\n");
+    if (exited) assert.equal(await exited, 0);
+  }
+  assert.ok(sharingErrors >= 1, "must exercise an actual Windows EPERM");
+  assert.ok(attempts >= 2);
+  assert.equal(entered, 1);
+  assert.deepEqual(await fs.readdir(directory), []);
 });
 
 test("nested Junctions stop safely and release leases; a root Junction remains supported", async (t) => {

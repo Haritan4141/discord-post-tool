@@ -11,6 +11,35 @@ async function fixture(t) {
   return runtimeDir;
 }
 
+test("transient Bot ticket publication errors retry the file update without repeating a POST", async (t) => {
+  const runtimeDir = await fixture(t);
+  const original = fs.rename;
+  let publicationAttempts = 0, calls = 0;
+  fs.rename = async (source, destination) => {
+    if (path.basename(path.dirname(destination)) === "request.mutex-v2") {
+      publicationAttempts += 1;
+      if (publicationAttempts <= 3) {
+        assert.equal(calls, 0, "request must wait for successful ticket publication");
+        throw Object.assign(new Error("fixture temporary sharing violation"), { code: "EPERM" });
+      }
+    }
+    return original(source, destination);
+  };
+  let response;
+  try {
+    response = await discordFetch("fixture-bot", "https://fixture.invalid", { method: "POST" }, {
+      runtimeDir, intervalMs: 0, fetch: async (_url, init) => {
+        calls += 1;
+        assert.equal(init.method, "POST");
+        return new Response("{}", { status: 201 });
+      },
+    });
+  } finally { fs.rename = original; }
+  assert.equal(response.status, 201);
+  assert.equal(publicationAttempts, 4);
+  assert.equal(calls, 1);
+});
+
 test("transport failures are not retried and release the shared Bot mutex", async (t) => {
   const runtimeDir = await fixture(t);
   let calls = 0;

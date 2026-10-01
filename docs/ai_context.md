@@ -54,6 +54,12 @@ GitHubリポジトリ:
 
 2026-10-01の公開承認: ユーザーからGitHubの `main` へのcommit/pushと、`C:\Users\Haritan\Documents\discord-post-tool-rirr` の最新化を明示承認された。公開対象は上記の検証済みコード・テスト・README・本資料のみ。`.env`、投稿manifest、画像・生成物、ユーザー作成未追跡フォルダはGitへ追加しない。rirrの同じ修正差分は対象ファイル限定のstashで保全してからfast-forward更新する。新規branch・force push・ユーザーデータ整理は行わない。下の「Git公開未実施」はレビュー・回帰検証時点の履歴である。
 
+2026-10-01の投稿準備: ユーザー承認に基づき、mainの投稿入力 `限定作品0930` の63作品を `限定作品0930_1`（32作品）/ `限定作品0930_2`（31作品）へ振り分けた。分割作品の全ZIP/PDF/profileを同じ側に保持し、移動222ファイルのSHA-256不変・全体の投稿前検証PASSを確認。mainは5カテゴリ・160作品・378添付で、各カテゴリ50作品以下になった。実Discord投稿・投稿manifest更新・再変換は行っていない。rirrの生成物は変更していない。
+
+2026-10-01の実投稿停止調査: ユーザーのGUIログで内部APIロックのticket更新renameがEPERMになり、終了コード1で停止した。mainの投稿manifestには限定作品0930_1の9作品・18添付が記録済み。Windowsの実ファイル占有で同じ停止を一時領域に再現し、失敗時はAPI action未到達・claim回収・次回取得成功を確認。ticket更新に短時間の再試行を実装済みで、実際の占有元は未特定。ユーザー承認を受けticket更新の短時間再試行を両cloneへ実装し、両cloneの全44テストPASSを確認。詳細は下の停止調査を参照。
+
+2026-10-01のEPERM修正公開承認: ユーザーから今回修正のmainへのpushとrirrへの適用を明示承認された。修正コードは既に両cloneで一致し各44テストPASS。ユーザーは修正版で投稿を再開しmainのCLI実行中を確認したが、完走は未確認。稼働中mainのプロセス停止やコード再書換えはせず、検証済みコード/テスト/README/本資料のGit履歴を同期する。rirrはGUI/CLIがないことを確認し、対象5ファイルだけをstashで保全してfast-forward更新する。過去のstash・ユーザー未追跡フォルダ・.env・投稿manifest・画像/生成物は保持し、実Discordへの操作は行わない。下の未commit/push記述は、この追加公開承認より前の検証時点の履歴。
+
 達成したい状態:
 
 - `raw_images` から10MiB未満のzip/pdfを生成できる。
@@ -299,6 +305,34 @@ GUIで実装した内容:
 - 両cloneの修正前バックアップ: `C:\Users\Haritan\AppData\Local\Temp\discord-concurrency-fix-68a64ca308624767baaf9d8cdf8c336e`
 - rirr最終39件ログ: `C:\Users\Haritan\AppData\Local\Temp\discord-final-test-816173d0eb564fe18fb20c9a0aa18db5\npm-test.log`
 - 隔離Electron確認: `C:\Users\Haritan\AppData\Local\Temp\discord-final-gui-X0nKLq\result.json`
+
+### 修正前に生成した既存出力の投稿前検証 (2026-10-01 JST)
+
+ユーザー指定の両 `optimized_webp_pdf` を、現行 `src/cli.js` の計画・実行可否・生成物検証関数でオフライン検査した。入力read leaseを保持し、runtimeと検査結果はOS一時directoryへ分離。Discord APIは使用せず、`.env`・投稿manifest・生成物・入力画像は変更していない。
+
+- **main（分割前の検査）:** 4カテゴリ、160作品、189組（378添付）。全profileはv3で、全ZIP/PDFのサイズ・SHA-256一致、pair欠損なし、pendingなし、孤立profileなし、分割範囲のgap/overlapなし。最大ファイルは約9.7999MiBで10MiB以下。生成物自体の再変換は不要だが、`限定作品0930` が63作品のため、当時は現行CLIの50チャンネル制限で入力全体のrunがAPIアクセス前に停止した。この制限は、次節のユーザー承認済みカテゴリ分割で解消した。
+- **rirr:** 2カテゴリ、35作品、35組（70添付）。全profileはv3で、全ZIP/PDFのサイズ・SHA-256一致、pair欠損・pending・孤立profileなし。カテゴリ別23作品/12作品、最大ファイル約9.7995MiB。現行CLIの投稿前検証に合格し、生成物はそのまま利用可能。
+- mainの25分割作品は添付合計が25MiBを超えるため、従来どおりautoモードでは各ファイルを同一作品チャンネルへ個別投稿する。今回の合格はローカルファイルと計画の検証であり、実Discordの権限・現在状態・投稿成功を確認した結果ではない。
+- 検査結果: main `C:\Users\Haritan\AppData\Local\Temp\discord-existing-output-check-pj7yna\result.json`、rirr `C:\Users\Haritan\AppData\Local\Temp\discord-existing-output-check-VxqwIs\result.json`。OS一時directoryのため将来の保持は保証しない。
+
+### メイン投稿カテゴリの32/31作品分割 (2026-10-01 JST)
+
+- ユーザーが用意した `optimized_webp_pdf/限定作品0930_1` と `限定作品0930_2` が空で、標準manifestに元/移動先カテゴリの記録がないことを確認。現行CLIの作品名順で63作品を32/31に分けた。投稿・変換と同じ共有runtimeのwrite leaseで出力rootを保護し、移動中は各作品のpending markerを元/移動先へ置いた。
+- `_1`: 32作品、34組（68添付＋34 profile）。`_2`: 31作品、40組（80添付＋40 profile）。自動分割された作品の全part・ZIP・PDF・profileを同一カテゴリへ移動。222ファイルすべての移動前後SHA-256一致を確認し、内容は変更していない。
+- 空になった元カテゴリは削除せず、`C:\Users\Haritan\Documents\discord-post-tool\tmp\category-split-3a994370-d0df-456a-9ac2-03a1c3c07203\限定作品0930` へ退避した。元カテゴリを投稿入力から外すことで空のDiscordカテゴリ作成を避けた。同directoryの `plan.json` / `progress.ndjson` / `result.json` に移動対応・検証結果を保存（Git対象外）。
+- 事後のmain全体は5カテゴリ、160作品、189組（378添付）。カテゴリ別32/31/33/44/20作品で全て50以下。現行CLIの `assertRunnablePlan` と `validateGeneratedOutputs` に合格、pending marker 0、標準manifestのhash不変を確認。原本画像・`.env`・他カテゴリ・rirr生成物は変更していない。実Discordへの接続・投稿は未実施。
+- 今回は投稿用生成物だけのカテゴリ配置変更。将来再変換する場合、入力側のカテゴリ指定/構成が旧 `限定作品0930` のままだと旧カテゴリへ再出力されるため、再変換の出力配置を合わせる必要がある。今回原本入力フォルダは移動していない。
+
+### 実投稿中の内部APIロック更新EPERM (2026-10-01 JST、修正検証済み)
+
+- **ユーザー提示ログの事実:** mainの限定作品0930_1への投稿中、request.mutex-v2内のUUID claimを一時ファイルから正式ファイルへrenameする処理でEPERMが発生し、CLIが終了コード1で停止。API待機が継続している状態ではない。カテゴリを32/31作品へ分けたことやZIP/PDFのサイズ超過を示すエラーではない。
+- **コード上の事実:** src/runtime-locks.js:35のticket公開renameには再試行がない。unlinkにはEPERM/EACCES/EBUSYの再試行がある。ticket公開はwithFileMutexのaction実行より前なので、この失敗に対応するAPI呼出はまだ送信されていない。現在のtest/runtime-safety.test.jsは恒久的なrename失敗時の安全停止/回収を検証するが、一時占有からの自動復帰は未対応。
+- **読み取り調査の事実:** mainの標準投稿manifestはJSONとして読み取り可能で、限定作品0930_1の9作品・18添付を記録。限定作品0930_2の記録はまだない。調査時の共有runtimeにはBot request claim/一時ファイル/job leaseはいずれも0件。履歴・生成物・入力・.env・runtimeは変更していない。Discordへの照会や投稿はしていないので、remote側の現在状態は独立確認していない。
+- **追加試験の事実:** Node v24.18.1/Windowsで、現行withFileMutexのclaimを隠しPowerShell子プロセスのFileStream（FileShare.ReadWrite、Delete共有なし）で一時的に開き、実fs.renameを実行。EPERM/renameを再現し、action未到達、失敗後claim/一時ファイル0、子プロセスがhandleを解放した後の次回mutex取得成功を確認。全てOS一時directory内で実施。証拠: C:\Users\Haritan\AppData\Local\Temp\discord-mutex-sharing-review-96zjn3\result.json。
+- **推測・未確認:** 実停止もWindowsの一時ファイル占有/共有条件による可能性があるが、占有したプロセスやEPERMの直接原因は特定できていない。Microsoft CreateFile公式仕様では、Delete共有がないopen handleはrenameも妨げる（https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilea）。Defender無効化やACL変更で対処しない。
+- **修正提案（承認前の記録）:** 自分のclaimを維持してEPERM/EACCES/EBUSY時のticket公開renameだけを短時間・回数制限付きで再試行し、継続失敗は現在どおり安全停止/回収する。unlinkして置換したりAPI POSTそのものを再試行したりしない。一時失敗後成功・継続失敗・実Windows共有違反・他プロセスとの相互排他の回帰試験を追加し、両cloneへ反映する。API待機state/lease/manifestにも同種のrenameがあるので修正時に適用範囲を確認する。今回は資料更新のみでソース変更/commit/pushはしていない。
+- **承認後の実装・検証結果:** ユーザーのOKを受け、src/runtime-locks.jsのticket公開renameだけにEPERM/EACCES/EBUSYの100ms間隔・最大20回再試行を追加した。choosing claimを削除せず保持し、API送信/保存形式/排他方式は変更しない。Windows実handleからの復帰、継続失敗21試行で停止/回収、非対象エラー即停止、別プロセス生存owner維持、Bot POST1回の追加回帰が合格。両cloneへ対象コード/テスト/READMEを反映済み。各npm testは44件PASS（既存39件＋追加5件、fail/skip 0）。変更JavaScript 3ファイルの構文検査・両cloneのgit diff --checkもPASS、対象5ファイルのclone間一致を確認。lease/rate/manifestのrenameは今回の停止箇所ではないので変更していない。commit/push、実Discord、ユーザーデータの変更は行わない。
+- **再開方針:** 標準manifestを保持し、同じ投稿入力・Guild・manifestで実行すれば既存の投稿済み判定とremote-checkを使用する。9作品・18添付はmanifest上の保存件数であり、Discord側の完全な成功証明ではない。現行コードの再実行だけでは一時占有の再発を防げない。
 
 ### 同時実行対応の最終確認 (2026-09-30、修正前の履歴)
 

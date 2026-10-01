@@ -26,13 +26,25 @@ async function removeClaim(file) {
   }
 }
 
+async function renameClaim(source, destination) {
+  // Windows can temporarily deny replacement while another handle is open.
+  // Keep the choosing claim visible throughout retries; never unlink to replace.
+  for (let attempt = 0; ; attempt += 1) {
+    try { await fs.rename(source, destination); return; }
+    catch (error) {
+      if (!["EPERM", "EACCES", "EBUSY"].includes(error.code) || attempt >= 20) throw error;
+      await sleep(100);
+    }
+  }
+}
+
 async function publishClaim(file, claim, first = false, onPublished) {
   const temporary = `${file}.${crypto.randomUUID()}.tmp`;
   try {
     await fs.writeFile(temporary, JSON.stringify(claim), { flag: "wx", mode: 0o600 });
     // Initial publication is exclusive and complete; never expose an empty owner.
     if (first) await fs.link(temporary, file);
-    else await fs.rename(temporary, file);
+    else await renameClaim(temporary, file);
     onPublished?.();
   } finally { await removeClaim(temporary); }
 }
