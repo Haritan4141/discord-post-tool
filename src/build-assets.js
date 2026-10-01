@@ -1,5 +1,11 @@
 #!/usr/bin/env node
 
+// Set this before loading native modules or starting asynchronous filesystem work.
+// GUI jobs also supply it in the child environment before Node starts.
+if (require.main === module && !process.env.UV_THREADPOOL_SIZE) {
+  process.env.UV_THREADPOOL_SIZE = "8";
+}
+
 const fs = require("node:fs/promises");
 const fsSync = require("node:fs");
 const crypto = require("node:crypto");
@@ -92,7 +98,7 @@ async function main(options = {}) {
     "pdf-min-long-edge",
     DEFAULT_PDF_MIN_LONG_EDGE
   );
-  const concurrency = readIntegerArg(args, "concurrency", 4);
+  const concurrency = readIntegerArg(args, "concurrency", 8);
   const chunkSize = readIntegerArg(args, "chunk-size", DEFAULT_CHUNK_SIZE);
   const minTailSize =
     args["min-tail-size"] === undefined ? null : readIntegerArg(args, "min-tail-size", 1);
@@ -124,6 +130,8 @@ async function main(options = {}) {
         "--pdf-long-edge <= --pdf-max-long-edge"
     );
   }
+
+  sharp.concurrency(2);
 
   const resources = [{ type: "path", path: inputDir, mode: "read" }];
   if (command === "run") resources.push({ type: "path", path: outputDir, mode: "write" });
@@ -1268,7 +1276,7 @@ Options:
   --pdf-long-edge <px>    Baseline PDF image long edge. Default: 1350
   --pdf-max-long-edge <px> Highest PDF image long edge when size allows. Default: 1600
   --pdf-min-long-edge <px> Lowest PDF image long edge. Default: 900
-  --concurrency <n>       Number of images to convert in parallel. Default: 4
+  --concurrency <n>       Number of images to convert in parallel. Default: 8
   --keep-jpgs             Also save the PDF-optimized JPGs next to zip/pdf
   --force                 Rebuild even if existing outputs are under target
 `);

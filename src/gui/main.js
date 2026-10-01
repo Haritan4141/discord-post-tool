@@ -201,7 +201,7 @@ function buildAssetsJob(request) {
   return {
     label: command === "run" ? "画像変換" : "画像変換計画",
     args,
-    env: {},
+    env: { UV_THREADPOOL_SIZE: process.env.UV_THREADPOOL_SIZE || "8" },
   };
 }
 

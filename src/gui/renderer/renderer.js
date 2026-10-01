@@ -1,6 +1,7 @@
 const api = window.discordPostTool;
 const BASE_STORAGE_KEY = "discordPostToolState";
 const ASSET_PROFILE_STORAGE_VERSION = 4;
+const ASSET_PERFORMANCE_STORAGE_VERSION = 1;
 
 const state = {
   activeTab: "assets",
@@ -305,6 +306,7 @@ function saveLocalState() {
   });
   data.activeTab = state.activeTab;
   data.assetProfileVersion = ASSET_PROFILE_STORAGE_VERSION;
+  data.assetPerformanceVersion = ASSET_PERFORMANCE_STORAGE_VERSION;
   localStorage.setItem(state.localStateKey, JSON.stringify(data));
 }
 
@@ -322,7 +324,7 @@ function restoreLocalState() {
   }
 
   for (const [id, value] of Object.entries(data)) {
-    if (id === "activeTab" || id === "assetProfileVersion") {
+    if (id === "activeTab" || id === "assetProfileVersion" || id === "assetPerformanceVersion") {
       continue;
     }
     const input = elements[id];
@@ -336,6 +338,7 @@ function restoreLocalState() {
     }
   }
 
+  let migrated = false;
   if (data.assetProfileVersion !== ASSET_PROFILE_STORAGE_VERSION) {
     elements.assetChunkSize.value = "100";
     elements.assetZipWebpMaxQuality.value = "85";
@@ -350,12 +353,21 @@ function restoreLocalState() {
     if (isLegacySplitOutput(elements.postInputDir.value)) {
       elements.postInputDir.value = state.defaultOptimizedDir;
     }
-    saveLocalState();
+    migrated = true;
+  }
+
+  if (data.assetPerformanceVersion !== ASSET_PERFORMANCE_STORAGE_VERSION) {
+    // Preserve explicitly reduced/increased parallelism; migrate the old default once.
+    if (data.assetConcurrency == null || ["", "4"].includes(String(data.assetConcurrency).trim())) {
+      elements.assetConcurrency.value = "8";
+    }
+    migrated = true;
   }
 
   if (data.activeTab) {
     switchTab(data.activeTab);
   }
+  if (migrated) saveLocalState();
 }
 
 function isLegacySplitOutput(value) {

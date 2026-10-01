@@ -60,6 +60,16 @@ GitHubリポジトリ:
 
 2026-10-01のEPERM修正公開承認: ユーザーから今回修正のmainへのpushとrirrへの適用を明示承認された。修正コードは既に両cloneで一致し各44テストPASS。ユーザーは修正版で投稿を再開しmainのCLI実行中を確認したが、完走は未確認。稼働中mainのプロセス停止やコード再書換えはせず、検証済みコード/テスト/README/本資料のGit履歴を同期する。rirrはGUI/CLIがないことを確認し、対象5ファイルだけをstashで保全してfast-forward更新する。過去のstash・ユーザー未追跡フォルダ・.env・投稿manifest・画像/生成物は保持し、実Discordへの操作は行わない。下の未commit/push記述は、この追加公開承認より前の検証時点の履歴。
 
+2026-10-01の投稿再停止: ユーザー提示の実投稿ログでHTTP400/code30013（サーバー全体のチャンネル上限500）により停止。内部mutexのEPERMとは別原因。ローカル履歴では限定作品0930_1は31/32作品・66添付が保存済み。現投稿入力の未投稿129作品と未作成4カテゴリには履歴上133枠が必要。全体500上限の事前検査が現行コードにないことを確認し、修正は提案のみ。空き確保または未投稿分の別Guild分配が必要。画像変換の高速化調査は、この停止調査を優先して保留中。
+
+2026-10-01の2カテゴリ集約完了: ユーザーの「実行してよいです」という具体的な全工程承認に基づき、限定作品vp0901_キャラ単体_ヌルテカ/ノーマルを各1チャンネルへ集約した。2026-10-01T02:09:35.526Z（11:09 JST）に実Discordの最終照合完了。各25メッセージ/50添付、合計100添付のサイズ/SHA-256一致を確認してから旧48チャンネルを削除し、全体452チャンネル/48空きを確認。mainの履歴50 groups/100 filesの移行と現行isPosted判定PASS、その他履歴の不変を独立検証した。バックアップは保持。rirrのmanifestや別Guildは変更していない。private archived threadはAPI403のため独立確認できず、ユーザーの「作っていない」という明示確認を適用した。
+
+2026-10-01の画像変換高速化導入: 導入前の100枚測定は31.753秒→16.696秒（約47.4%短縮）で画質/容量/画像hash一致。ユーザー承認後、画像並列8・UV pool未指定時8・sharp threads 2を既定化し、GUIの旧既定4は一度だけ8へ移行する実装を行った。両cloneで各49テストPASS、実100枚の一時コピーを両cloneから同時変換し、両方の100 WebP＋100 JPEGのhashと品質/解像度/容量が導入前測定と全件一致。長時間処理と他の重いアプリとの競合は未検証。品質探索/生成物profile/投稿形式/依存関係は維持。詳細と公開手順は下の導入記録を参照。
+
+2026-10-01の絵柄サンプル内チャンネル削除完了（削除完了時の容量状態）: ユーザーの明示的な全配下チャンネル削除依頼に基づき、指定Guildの絵柄サンプル内30 text channelsを削除した。2026-10-01T02:29:03.070Z（11:29 JST）に最終GET検証完了。カテゴリ自体は残りchild 0、全体422 channels/78 free slots。この時点の未投稿129作品・312添付を既存の作品別チャンネル方式で投稿するには129作品チャンネル＋4カテゴリ=133枠が必要で、55枠不足だった。30投稿/60添付（162,394,899 bytes）のローカルバックアップと添付SHA-256 readback一致を確認してから削除した。mainのmanifestは変更せず、rirrのmanifest/別Guild/ユーザー生成物は変更していない。
+
+2026-10-01の未投稿分抽出完了（最新の投稿状態）: ユーザーが元Guildで500チャンネル上限まで再実行し、残りを別サーバーへ投稿するための別フォルダ化を依頼。2026-10-01T02:53:46.164Z（11:53 JST）に最新manifestと実DiscordのGET照合を完了し、元Guild500 channels、現入力160作品のうち107作品/236添付は投稿済み、53作品/142添付は全件未投稿、部分投稿作品0と確認した。未投稿のみをC:\Users\Haritan\Documents\discord-post-tool\optimized_webp_pdf_unposted_20261001へコピーし、必要な71 assets.jsonも保持。2カテゴリ（限定作品vp0930_1:33作品/94添付、限定作品vp0930_2:20作品/48添付）、213コピー全てのSHA-256一致と現行CLIの投稿前検証PASS。元入力/manifestを保持し、Discord書込は0。新規カテゴリ/作品チャンネルを全て作る別サーバーでは55空き枠が必要。抽出フォルダを別サーバー側GUIの投稿入力として指定する。別Guildへの実投稿・容量確認は未実施。
+
 達成したい状態:
 
 - `raw_images` から10MiB未満のzip/pdfを生成できる。
@@ -145,7 +155,7 @@ GUIはElectronデスクトップアプリとして実装開始済みです。起
 - 選択した出力先に同一作品の旧範囲付きファイルがある場合、自動削除せずエラー停止する。
 - ZIP/PDF/profileは一時ファイルへ書いてから確定し、profileへ各出力のSHA-256を記録。再利用時は入力署名、設定、サイズ、ハッシュを照合する。
 - デフォルトの生成目標を `9.8MiB` に設定。
-- `--concurrency <n>` を追加し、画像変換を並列化。デフォルトは4。
+- `--concurrency <n>` を追加し、画像変換を並列化。追加当時のデフォルトは4（2026-10-01の高速化導入後は8）。
 - 最大枚数の組がZIPまたはPDFの最低設定でも9.8MiBを超える場合、その組だけを半分へ自動分割して再試行する。100枚なら通常は2ファイル、重い作品だけ`_1-50`/`_51-100`の4ファイルになる。
 - 自動分割済み出力を再実行時に検出し、正常な組はプロファイル・入力署名・サイズ・ハッシュ検証後にスキップする。不足または異常な組だけを再生成する。
 - 画像破損などサイズ超過以外のエラーは、自動分割の対象にせず従来どおり停止する。
@@ -333,6 +343,72 @@ GUIで実装した内容:
 - **修正提案（承認前の記録）:** 自分のclaimを維持してEPERM/EACCES/EBUSY時のticket公開renameだけを短時間・回数制限付きで再試行し、継続失敗は現在どおり安全停止/回収する。unlinkして置換したりAPI POSTそのものを再試行したりしない。一時失敗後成功・継続失敗・実Windows共有違反・他プロセスとの相互排他の回帰試験を追加し、両cloneへ反映する。API待機state/lease/manifestにも同種のrenameがあるので修正時に適用範囲を確認する。今回は資料更新のみでソース変更/commit/pushはしていない。
 - **承認後の実装・検証結果:** ユーザーのOKを受け、src/runtime-locks.jsのticket公開renameだけにEPERM/EACCES/EBUSYの100ms間隔・最大20回再試行を追加した。choosing claimを削除せず保持し、API送信/保存形式/排他方式は変更しない。Windows実handleからの復帰、継続失敗21試行で停止/回収、非対象エラー即停止、別プロセス生存owner維持、Bot POST1回の追加回帰が合格。両cloneへ対象コード/テスト/READMEを反映済み。各npm testは44件PASS（既存39件＋追加5件、fail/skip 0）。変更JavaScript 3ファイルの構文検査・両cloneのgit diff --checkもPASS、対象5ファイルのclone間一致を確認。lease/rate/manifestのrenameは今回の停止箇所ではないので変更していない。commit/push、実Discord、ユーザーデータの変更は行わない。
 - **再開方針:** 標準manifestを保持し、同じ投稿入力・Guild・manifestで実行すれば既存の投稿済み判定とremote-checkを使用する。9作品・18添付はmanifest上の保存件数であり、Discord側の完全な成功証明ではない。現行コードの再実行だけでは一時占有の再発を防げない。
+
+### 実投稿のサーバー全体500チャンネル上限 (2026-10-01 JST、対応方針待ち)
+
+- **提示ログ・公式仕様:** POST /guilds/.../channelsがHTTP400、code30013、Maximum number of server channels reached (500)で拒否され、終了コード1で停止。カテゴリ内50枠とサーバー全体500枠は別の制約。全体500にはテキスト・ボイス・カテゴリを含み、Boostでも同じ（https://support.discord.com/hc/en-us/articles/33694251638295-Discord-Account-Caps-Server-Caps-and-More、https://docs.discord.com/developers/topics/opcodes-and-status-codes）。カテゴリ分割だけでは全体の空きは増えない。
+- **ローカル読み取り調査:** CLIは終了しmain Electronだけが残る。標準manifestはJSONとして読み取り可能。対象Guildの履歴にはカテゴリ17 ID・作品チャンネル479 ID、重複除外496 IDがあるが、現在のDiscord上の存在は独立照会していない。限定作品0930_1は31作品・66添付の投稿記録あり、残り1作品/2添付。限定作品0930_2は未記録。これはローカル履歴の事実で、全サーバーの最新一覧を確認した数ではない。
+- **現入力の残り（履歴基準）:** 現行buildLocalPlan/isPosted/groupFilesをメモリ内で読み取り利用し、全5カテゴリ160作品/378添付のうち31作品/66添付が保存済み、未投稿129作品/312添付を確認。カテゴリ別の未作成作品チャンネルは1/31/33/44/20、未作成カテゴリは4。履歴が現在のサーバー状態に一致すれば新規133枠が必要。最初の分割2カテゴリだけでも33枠（1作品＋31作品＋1カテゴリ）必要。Discord照会・.env読み取り・履歴/生成物の書換えは行っていない。
+- **コード上の不足・修正提案:** src/cli.js:619で一覧を取得し、同:639でカテゴリ内50を検査するが、サーバー全体500と計画に必要な追加枠の事前検査がない。投稿前に取得したサーバー一覧と既存ID/名称再利用を使って新規カテゴリ＋作品チャンネルの必要数を算出し、空き不足を具体的な日本語で表示する案。外部ツール/ユーザーによる実行中の追加もあるため、30013の実行時エラー案内も必要。今回ソース修正は未実施・実装前確認待ち。
+- **再開条件・保護:** 待機や同じ設定の再実行だけでは500枠不足を解消しない。不要チャンネルの整理（削除は投稿履歴/添付を失うため対象を事前確認）か、未投稿分だけを別Guildへ分配する。Guild変更だけで同じ全入力を実行すると新Guildでは投稿履歴が別なので投稿済み31作品も再投稿するため、分配する入力を先に確定する。勝手なサーバー操作、チャンネル/カテゴリ削除、入力移動、manifest編集は行わない。
+- **別件の保留:** ユーザー依頼の画像変換速度の調査は読み取りを開始した段階で、本件停止報告を優先。測定・実装は未実施。投稿側の容量対応方針が決まった後、画質/容量/既存出力再利用への影響と一時画像での測定を調べる。
+
+### vp0901の2カテゴリを各1チャンネルへ集約 (2026-10-01 JST、実行・最終検証完了)
+
+- **選択された対象/形:** 限定作品vp0901_キャラ単体_ヌルテカと限定作品vp0901_キャラ単体_ノーマルを、それぞれ1チャンネルへ集約する（カテゴリは2つ維持）。カテゴリだけ統合して作品別チャンネルを残す方法ではない。
+- **実Discordの読み取り事実:** 2026-10-01T01:42:56.742Zの開始時に、GUI画面/ローカルmanifestで特定したGuildへGETのみを使用。全体500チャンネル、対象各25 text channels/25 messages/50 attachments、合計50 messages/100 attachmentsを確認。全50メッセージは設定済みBotの投稿で、本文・他作者・pin・reaction・可視thread referenceなし。category内のchild IDは履歴と完全一致。各カテゴリ内でpermission_overwritesとNSFW flagが揃う。active target threadsとarchived public threadsは0。archived private threadsは50箇所とも403で未確認（0と断定しない）；ユーザーはprivate threadを作っていないと明示回答した。
+- **添付名照合:** 履歴の元ファイル名（例の全角コロン以降の日本語）とDiscord側のfilenameが、対象100添付全てで異なる。message IDを特定した上でサイズ・拡張子による一意対応を取り、実CDNからバックアップした。移行の検証をfilenameの一致だけに依存させない。現行uploadGroupはisPostedの履歴判定を優先するので、正しいmessage/channel IDとサイズを保持したmanifestがあれば、この添付名差だけで再投稿する実装ではない。集約後は全25作品のgroup/filesのchannelIdと新messageIdを正しく移す。
+- **復旧用データ:** C:\Users\Haritan\Documents\discord-post-tool\tmp\channel-consolidation-audit-8a20ea09-dcda-457b-9235-2d6be5a5d86a\ にaudit.json、summary.json、manifest-before.json、attachments/、backup-result.json、plan.jsonを保持（Git対象外）。100ファイル/997675777 bytes（約952MiB）を変換せず取得し、保存後に全ファイルを読み直してサイズ/SHA-256一致。Tokenや認証headerは保存していない。auditには投稿内容/添付URL等があるため、Gitやチャットへそのまま出さない。
+- **具体的な移行案:** 既存akr-ヌルテカ/akr-ノーマルの各1チャンネルを残し、キャラ単体-ヌルテカ-まとめ/キャラ単体-ノーマル-まとめへ変更。残る24チャンネルずつの96添付を、本文なし・再変換なしで集約先へ移し、移行先実データをサイズ/hashで照合して履歴を更新した後、旧48チャンネルを削除する。新規チャンネルは0なので500枠でも着手可能。カテゴリと権限/NSFW設定は維持。コピーされた投稿は新message ID/日時となり、削除した旧チャンネル/メッセージURLは復元できない。バックアップから内容の復元は可能だが旧ID/日時の完全rollbackはできない。
+- **容量の限界:** 500から452へ減り48枠が空く見込み。限定作品0930_1の残り1作品と限定作品0930_2の31作品＋1カテゴリに必要な33枠には足りる。現入力全体の履歴上の追加133枠には不足し、さらに85枠相当の対応が必要。全入力で再実行すると後続カテゴリで再び不足するので、再開範囲を絞るか追加の容量対応を決める。
+- **承認/実行条件:** ユーザーが投稿/rename/manifest更新/旧48削除を含む具体的な計画に「実行してよいです」と明示承認。Guildとmanifest/stagingを共有leaseで保護し、開始時に対象ID・名前・権限・投稿内容とmanifest hashを再照合する。差分や曖昧なPOSTは停止し、blind retryしない。新投稿ID/添付hashとdurable journalを保存し、100添付の移行先SHA-256検証・履歴更新・集約先権限照合後に削除へ進む。個々のsource削除直前にも会話/public threadと対応する検証済み移行先メッセージを再確認する。対象GuildはGUI/manifestで特定したIDへ固定し、別の.env既定Guildに流用しない。今回ソースコード変更・commit/pushはしていない。
+- **実行で確認した事実:** 直前GET照合は50 sources/100 backup files/全体500でPASS。独立の読み取り専用verify-plan.jsでもplan/audit/manifest-before/100 backup実体の全対応を照合し、2 operations/50 sources/48 delete IDs/100 attachments、failures 0でPASS。48本文なしメッセージ・96添付を既存2チャンネルへコピーし、元から残る4添付を含む100添付をCDNから再取得して全サイズ/SHA-256一致を確認。その後main manifestをatomic保存、集約先2チャンネルをrenameし、権限/NSFW等の不変をGET確認。各削除直前にsourceの投稿・権限・public archived/active threadsと対応する検証済みdestinationを再確認し、指定旧48 IDだけを削除してGET404とjournal receiptを保存した。
+- **最終実機/履歴検証:** 2026-10-01T02:09:35.526Zに、サーバーの最終channel ID集合が開始時から指定48 IDのみを除いた集合と一致し、452 channels/48 free slotsを確認。各対象カテゴリのchildは1、各25 messages/50 attachmentsをfresh GETで照合。残した既存チャンネルはキャラ単体-ヌルテカ-まとめ（1543883449058992210）とキャラ単体-ノーマル-まとめ（1543884214611746937）。独立のverify-final.jsで現在manifestの50 groups/100 file recordsが新message/channel IDsと一致し、現行isPostedが全件true、他カテゴリ/他Guildの履歴不変を確認。実行中の例外・曖昧なPOST・未完了削除はなし。
+- **保全/再開:** tmp/channel-consolidation-audit-8a20ea09-dcda-457b-9235-2d6be5a5d86aに100添付（997,675,777 bytes）、元manifest/投稿snapshot、plan、durable execution.ndjson、execution-result.json、独立照合スクリプト/証拠を保持する。snapshotは期限付き添付URLを含む私的ローカル資料でありGit/公開資料へ追加しない。移行は完了済みの一回限りで、migrate.jsを再実行しない。rirrのmanifest/生成物、別Guild、他カテゴリへのDiscord書込は行っていない。残り投稿は未実行。集約完了時点の48空きは限定作品0930_1→限定作品0930_2の再開に必要な33枠を満たすが、その時点では全入力に85枠不足だった。最新の容量は後述の絵柄サンプル削除結果を参照。今回本番ソース・依存関係の変更、Git操作はなし。
+
+### 絵柄サンプル内30チャンネルの削除 (2026-10-01 JST、削除・最終検証完了)
+
+- **承認/対象:** ユーザーから絵柄サンプルのカテゴリ内全チャンネルの削除を明示依頼された。同じGUI/manifestで特定したGuildへ固定し、同名category type 4が1件だけであることと、配下30件が全てtype 0であることをGET確認。category ID 1543882466538950729と30 child IDsをローカルplanに固定。カテゴリ自体の削除、別Guild/カテゴリの削除、投稿/カテゴリ作成等は許可しない一回限りの操作とした。
+- **削除前の保全/範囲:** Guildと投稿input/manifestのread leasesを保持。30 channels/30 messages/60 attachmentsをsnapshotし、162,394,899 bytesの添付を取得・fsync・readback SHA-256照合した。可視active/public archived threadsは0（private archivedの完全なバックアップは保証しない）。各DELETE直前にsource channelのGuild/parent/権限/名前/投稿と可視threadを再照合。指定30 IDのみDELETEし、各GET404とdurable intent/ackを記録。保存snapshotは期限付きURLを含む私的ローカル資料のため公開/Gitへ追加しない。
+- **最終実機事実:** 2026-10-01T02:29:03.070Zに最終channel ID集合が開始時の集合から指定30 IDだけを除いたものと完全一致。カテゴリとその設定は維持、配下は0、422 channels/78 free slotsをGET確認。main manifestのSHA-256不変を確認。rirrのmanifest、他Guild、画像/生成物、.env、実行中GUI、本番ソース/依存関係は変更していない。Git操作なし。tmp/style-sample-delete-20261001にplan、元channels/messages/manifest、60添付/hash、journal、execution-result.jsonを保持。完了済みのoperate.jsを再実行しない。
+- **残り投稿容量:** 最新ローカルplanと実Discordの既存ID/同名チャンネル再利用を照合した必要追加枠は、限定作品0930_1が1、限定作品0930_2が32、限定作品0930_ランダムが34、限定作品vp0930_1が45、限定作品vp0930_2が21、合計133。既存方式で全て投稿するには、78空きに対して55不足。例えば0930_1→0930_2→vp0930_1の3カテゴリ分は1+32+45=78枠で収まるが全体上限ちょうどになり、後続ランダム/vp0930_2の34+21=55枠がない。追加の旧チャンネル集約/整理か、新規投稿分のチャンネル集約/別Guild分配が必要。今回残り投稿を自動実行していない。
+- **履歴を保持する理由/再作成:** 削除したサンプルの過去manifest entriesは保全のため残した。現在の投稿入力5カテゴリには絵柄サンプルが含まれないので、通常の現入力再開では再作成されない。別途サンプルの元入力を投稿すると、現行recreateMissing既定動作でチャンネル/添付が作り直され得る点に注意する。
+
+### 元Guild上限到達後の未投稿分を別サーバー用へ抽出 (2026-10-01 JST、コピー・検証完了)
+
+- **依頼/対象:** ユーザーの再実行ログはHTTP400/code30013で停止。既存の元Guildへもう一度投稿できる限界まで進めたあと、未投稿分だけを別フォルダへまとめるよう依頼された。元のoptimized_webp_pdf/manifestは保持し、別Guildへの実投稿やGUI設定変更は行わず、データコピーだけ実施した。
+- **照合の事実:** 元Guild IDをGUI/manifestの1510449199622131742へ固定し、Guildの排他lease、input/manifestのread leases、コピー先write leasesを保持。現行CLIのbuildLocalPlanで160作品/378添付を探索し、GETで元Guild500 channelsを確認。既存category/group ID・名前による再利用を照合し、履歴の各message IDを実message historyと対応させ、設定済みBotの作者ID、channel ID、添付サイズ/拡張子の一意一致を確認して投稿済みを除外した。Discord側でfilenameが正規化されるため、名前一致だけで判定しない。未記録の成功投稿は必要時のみ実添付hashで確認する設計だが、今回は該当0。結果は投稿済み107作品/236添付、全未投稿53作品/142添付、部分投稿作品0。Discord APIはGETのみ。
+- **完成した入力:** C:\Users\Haritan\Documents\discord-post-tool\optimized_webp_pdf_unposted_20261001。限定作品vp0930_1は33作品/94添付、限定作品vp0930_2は20作品/48添付。142 ZIP/PDF（1,338,658,505 bytes）＋対応する71 assets.json=213ファイルをカテゴリ/元ファイル名/範囲番号のままCOPYFILE_EXCLでコピーした。投稿済み107作品や元manifest/.envはコピー先へ含めない。元ファイルの移動/削除・再変換なし。
+- **検証/公開範囲:** stagingで現行assertRunnablePlan/validateGeneratedOutputsを通し、全コピーの元/先SHA-256一致を確認してから完成フォルダへrename。完成後も全213ファイルのhash、投稿計画2カテゴリ/53作品/142添付、profile/pending検査を再確認した。元manifestのSHA-256不変、元Guildのchannel ID集合不変、元ファイル保持を確認。既存optimized_*/ ignoreで抽出フォルダはGit対象外。tmp/unposted-export-20261001に元manifest、channel snapshot、classification.json、copy-proof.json、result.jsonと一回限りのexport.jsを保持。完成済みexport.jsを再実行しない。分類記録は投稿履歴に基づくサイズ/ID照合であり、既存投稿全236添付をCDNからhash再照合したという主張はしない。
+- **次回投稿:** 別サーバー側GUIで、上記完成フォルダを投稿入力に指定し、投稿先Guild IDを確認する。新規に全カテゴリ/作品チャンネルを作る場合は2+53=55枠が必要（各カテゴリ33/20作品で50枠制限内）。別Guildの空き/権限は今回未確認。元の全入力を新Guildへ指定すると投稿済み107作品も新Guildでは未投稿扱いになり重複するため、必ず抽出フォルダを使用する。元Guild/別Guildへの追加POST、カテゴリ/チャンネル作成/削除、本番ソース変更、Git操作、rirrの入力/manifest変更は今回行っていない。
+
+### 画像変換速度の調査 (2026-10-01 JST、以下は導入前の調査記録)
+
+- **コード上の事実:** src/build-assets.js:95の画像並列数は既定4。src/build-assets.js:552-556でZIP探索とPDF探索を順番に実行し、636-722の各候補ごとに全画像を再エンコードする。WebPは品質だけ指定（sharp既定effort 4）、JPEGはmozjpeg:true/progressive:true/4:2:0。sharp.concurrency()やUV_THREADPOOL_SIZEを本番コードから設定していない。品質を固定する既存機能は探索回数を減らすが、容量に余裕がある作品の品質向上や重い作品の容量調整に影響するため、今回の第一候補にはしない。
+- **実機/公式資料:** MAIN DESKTOP-5NPLIIV、32 logical processors、installed sharp 0.34.5/libvips 8.17.3、sharp.concurrency()=32、シェルのUV_THREADPOOL_SIZEは未設定を確認。公式資料では画像の同時処理上限はlibuv pool（既定4）、1画像内のthreadsはsharp.concurrency()で管理する別の設定（https://sharp.pixelplumbing.com/performance/、https://sharp.pixelplumbing.com/api-utility/#concurrency、2026-10-01参照）。WebP effort 4とmozjpegの速度/容量のトレードオフはhttps://sharp.pixelplumbing.com/api-output/で確認。依存関係更新やGPU/Driver変更は不要な案。
+- **測定方法:** raw_imagesの既存1248×1824 PNGを一時フォルダへコピーしSHA-256一致を確認。元画像への書込なし。32枚のWebP q75＋JPEG q75/1600pxを各構成2回、別Node子プロセスで測定。次に同じsource folderの100枚をコピーし、現行build-assets mainを一時input/output/runtimeだけで実行（計測wrapperによるstage timing以外は現行処理）。現構成と候補構成を各2回、2回目は順番を反転して測定。Discord APIは呼ばず、ユーザー生成物の上書き・forceはなし。元32/100画像の処理後SHA-256不変と、現行の最終出力検証成功を確認。
+
+| 32枚・1候補ずつの構成 | UV pool / 画像並列 / 1画像threads | 平均秒 | ピークRSS最大MiB |
+| --- | --- | ---: | ---: |
+| 現設定 | 4 / 4 / 32 | 1.990 | 254.8 |
+| 画像並列数だけ8 | 4 / 8 / 32 | 1.955 | 258.6 |
+| 1画像threadsだけ2 | 4 / 4 / 2 | 1.798 | 199.5 |
+| UV poolと画像並列を8 | 8 / 8 / 32 | 1.206 | 366.7 |
+| 推奨候補 | 8 / 8 / 2 | 1.002 | 246.8 |
+| より強い並列候補 | 12 / 12 / 2 | 0.812 | 338.2 |
+
+- **100枚セット全体の確認事実:** 現設定31.360/32.146秒（平均31.753）、8/8/2候補16.651/16.741秒（平均16.696）。約47.4%時間短縮、約1.90倍の処理速度。両構成ともZIP探索5回/採用品質80/10,062,601 bytes、PDF探索3回/品質73/長辺1504px/10,275,935 bytesで一致。選択された100 WebP＋100 JPEGのエンコード済みbuffer hashが全件一致し、サンプルでは画質/容量/分割条件を変えていない。ZIP/PDFコンテナ自体のhash同一は主張しない（作成時刻等のmetadataが異なり得る）。ピークRSS最大は現設定347.1MiB、候補370.0MiB（約22.9MiB増）。32枚単一パスでも全構成の画像hashが一致。
+- **提案/推測:** まず変換子プロセスだけUV pool=8、画像並列=8、sharp threads=2に設定する案が有望。品質探索・出力検証・再開・自動分割・投稿形式のアルゴリズムは維持できる見込み。GUIの並列数だけ8へ変えても、UV pool=4のままでは今回ほぼ改善しなかった。12並列は32枚でより速いがメモリ/CPU負荷が増え、100枚全体未測定なので既定の第一候補は8。CPU利用が増えるため、他の重い処理や両clone同時変換での負荷は別途測定する。PDF/ZIPを同時探索する案はピークメモリと並列数をさらに増やし、raw image cacheは100枚で大きくメモリを使うため優先度を下げる。effort低下/mozjpeg無効化は出力容量・画質が変わり得るため第一候補から外す。
+- **限界/未実装:** 上記は同PC・同一100枚セットの一時データ測定であり、全作品・他PC・両clone同時処理に47%を保証しない。重い自動分割セット、長時間処理、CLI/GUIへの設定導入と回帰検証は未実施。本番コード・GUIの保存値・依存関係・.envは未変更。実装する場合はユーザー確認後、対応設定だけ変更して両cloneへ反映し、品質/容量/hash、スキップ/分割/排他を検証する。tmp/conversion-speed-probe-20261001に一時画像、source hash proof、bench.js/full-bench.js、results.json/full-results.json、生成物を保持。新しいGit操作は未実施。
+
+### 画像変換高速化の既定設定導入 (2026-10-01 JST)
+
+- **承認/実装:** ユーザーが上記候補をデフォルト化しmainへpush、rirrへ同期することを明示承認。画像並列数8、1画像内のsharp threads 2、UV pool未指定時8を導入。GUIは変換子プロセスのspawn環境で設定し、直接CLIはnative module読込/非同期処理より前に設定する。明示的なUV_THREADPOOL_SIZEは尊重し、投稿子プロセスへ変換設定を追加しない。wrapper/孫プロセスは追加せず、既存の停止・PID leaseの構造を維持する。
+- **GUI保存値:** assetPerformanceVersion=1を独立追加し、旧既定値4と未指定値だけ一度8へ移行する。並列数2/6/12などのカスタム値、入力/出力パス、画質、Guild、選択タブは保持。移行後に4へ変更しても再移行しない。既存assetProfileVersionは4のままで、出力profileVersionも3を維持し、既存生成物を高速化設定の変更だけで再生成しない。
+- **回帰検証:** 追加5テストでCLIの既定8、直列設定との品質/容量/ZIP・JPEG hash一致、既存生成物のスキップ、GUI設定移行/カスタム値保持/移行後4の保持、変換専用envと明示envの尊重を確認。メイン側npm testは49件PASS。独立レビューでは直接CLIの冒頭設定と起動時env設定の両方でUV pool 8相当の動作をpbkdf2比較で確認し、コード上の要修正点なし。両cloneでの最終検証/同期結果は下に記録する。
+- **両cloneの最終検証:** 各npm testは49件PASS/fail・skip 0。両cloneの実CLIを同時に起動し、保存していた実100枚のテストコピーを共通読取入力・独立出力・private runtimeで変換した。両方とも生成100 WebPと100 JPEGのhash集合、ZIP/PDF容量、採用品質/解像度が導入前測定と一致、pending markerなし、入力コピー/.env/manifest不変を確認。旧測定の元画像パスはユーザー側の現配置に存在しないため元画像hashの再確認はせず、保持済みコピー100枚を既存proofと照合した。今回の同時変換は品質・安全性検証で、所要時間の比較測定は主張しない。変更JavaScript構文検査、両cloneのdiff --check、独立レビューPASS。証拠はtmp/conversion-default-rollout-20261001（Git対象外）に保持。
+- **公開/同期:** 承認範囲のコード/テスト/README/本資料をmainへcommit/pushし、rirrは今回の変更と従来の未commit資料を対象パス限定のstashに保全してfast-forward同期する。従来のstash、ユーザー未追跡フォルダ、認証情報、manifest、入力/生成物は保持する。依存関係変更なし。
+- **残る限界:** 導入前の約47.4%短縮は同一100枚セットの測定値で全作品の保証ではない。長時間処理、他の重いアプリとの競合は未検証。CPU負荷が高い場合はGUIの並列数を下げる。稼働中GUI/CLIを停止・再起動せず、GUI保存値の実移行は更新後の次回起動で行う。依存関係/.env/ユーザー画像・生成物・manifestは変更しない。
 
 ### 同時実行対応の最終確認 (2026-09-30、修正前の履歴)
 
