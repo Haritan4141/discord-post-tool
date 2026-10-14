@@ -2,6 +2,7 @@ const api = window.discordPostTool;
 const BASE_STORAGE_KEY = "discordPostToolState";
 const ASSET_PROFILE_STORAGE_VERSION = 4;
 const ASSET_PERFORMANCE_STORAGE_VERSION = 1;
+const POSTING_PROFILE_STORAGE_VERSION = 1;
 
 const state = {
   activeTab: "assets",
@@ -58,6 +59,9 @@ function bindElements() {
     "postGuildName",
     "postBotToken",
     "postUploadMode",
+    "postPostingLayout",
+    "postForumLayout",
+    "postForumParent",
     "postMaxFileMiB",
     "postMaxRequestMiB",
     "postCategory",
@@ -117,6 +121,8 @@ async function hydrateDefaults() {
   elements.assetOutputDir.value ||= defaults.optimizedDir;
   elements.postInputDir.value ||= defaults.optimizedDir;
   elements.postGuildId.value ||= defaults.guildId;
+  elements.postPostingLayout.value ||= "forum";
+  elements.postForumLayout.value ||= "gallery";
   elements.tokenStatus.textContent = defaults.hasBotToken ? "設定済み" : "未設定";
   elements.guildStatus.textContent = defaults.guildId ? "設定済み" : "未設定";
   return defaults;
@@ -135,7 +141,7 @@ function switchTab(tab) {
     elements.viewSubtitle.textContent = "ZIPは元解像度WebP、PDFは縮小JPEGで生成します。";
   } else {
     elements.viewTitle.textContent = "Discord投稿";
-    elements.viewSubtitle.textContent = "変換済みフォルダのカテゴリ/ファイル構成をDiscordへ反映します。";
+    elements.viewSubtitle.textContent = "変換済みフォルダをフォーラムまたは従来のカテゴリ/チャンネルへ投稿します。";
   }
 
   saveLocalState();
@@ -175,6 +181,9 @@ async function startPostJob(command) {
     guildId: valueOrEmpty(elements.postGuildId.value),
     botToken: valueOrEmpty(elements.postBotToken.value),
     uploadMode: elements.postUploadMode.value,
+    postingLayout: elements.postPostingLayout.value,
+    forumLayout: elements.postForumLayout.value,
+    forumParent: valueOrEmpty(elements.postForumParent.value),
     maxFileMiB: valueOrEmpty(elements.postMaxFileMiB.value),
     maxRequestMiB: valueOrEmpty(elements.postMaxRequestMiB.value),
     category: valueOrEmpty(elements.postCategory.value),
@@ -307,6 +316,7 @@ function saveLocalState() {
   data.activeTab = state.activeTab;
   data.assetProfileVersion = ASSET_PROFILE_STORAGE_VERSION;
   data.assetPerformanceVersion = ASSET_PERFORMANCE_STORAGE_VERSION;
+  data.postingProfileVersion = POSTING_PROFILE_STORAGE_VERSION;
   localStorage.setItem(state.localStateKey, JSON.stringify(data));
 }
 
@@ -324,7 +334,7 @@ function restoreLocalState() {
   }
 
   for (const [id, value] of Object.entries(data)) {
-    if (id === "activeTab" || id === "assetProfileVersion" || id === "assetPerformanceVersion") {
+    if (id === "activeTab" || id === "assetProfileVersion" || id === "assetPerformanceVersion" || id === "postingProfileVersion") {
       continue;
     }
     const input = elements[id];
@@ -361,6 +371,14 @@ function restoreLocalState() {
     if (data.assetConcurrency == null || ["", "4"].includes(String(data.assetConcurrency).trim())) {
       elements.assetConcurrency.value = "8";
     }
+    migrated = true;
+  }
+
+  if (data.postingProfileVersion !== POSTING_PROFILE_STORAGE_VERSION) {
+    // The forum workflow is the new default.  Keep the legacy channel workflow
+    // available as an explicit choice after this one-time migration.
+    elements.postPostingLayout.value = "forum";
+    elements.postForumLayout.value = "gallery";
     migrated = true;
   }
 

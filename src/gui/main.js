@@ -208,9 +208,14 @@ function buildAssetsJob(request) {
 function buildPostJob(request) {
   const command = request.command === "run" ? "run" : "plan";
   const args = [CLI_SCRIPT, command];
+  const postingLayout = request.postingLayout === "channels" ? "channels" : "forum";
+  const forumLayout = request.forumLayout === "list" ? "list" : "gallery";
 
   pushOption(args, "--input", request.inputDir);
   pushOption(args, "--upload-mode", request.uploadMode);
+  pushOption(args, "--posting-layout", postingLayout);
+  pushOption(args, "--forum-layout", forumLayout);
+  pushOption(args, "--forum-parent", request.forumParent);
   pushOption(args, "--max-file-mib", request.maxFileMiB);
   pushOption(args, "--max-request-mib", request.maxRequestMiB);
   pushOption(args, "--limit", request.limit);

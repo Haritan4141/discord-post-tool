@@ -57,6 +57,7 @@
                 <input id="assetInputDir" type="text" />
                 <button class="icon-button" data-folder-target="assetInputDir" type="button" title="フォルダを選択">…</button>
               </div>
+              <small class="field-note">raw_images / カテゴリ名 / フォーラム名 / 作品名 / 画像 の階層を、変換後にも保持します。</small>
             </label>
 
             <label class="field wide">
@@ -181,6 +182,28 @@
                 <option value="separate">separate</option>
                 <option value="bundle">bundle</option>
               </select>
+            </label>
+
+            <label class="field">
+              <span>投稿先形式</span>
+              <select id="postPostingLayout">
+                <option value="forum">フォーラム（作品ごとに1投稿）</option>
+                <option value="channels">カテゴリ/チャンネル（従来方式）</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>新しいフォーラムの表示</span>
+              <select id="postForumLayout">
+                <option value="gallery">ギャラリー</option>
+                <option value="list">リスト</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>フォーラム親カテゴリID（旧構成のみ任意）</span>
+              <input id="postForumParent" type="text" placeholder="空欄なら自動" />
+              <small class="field-note">カテゴリ/フォーラム階層を使う場合は空欄にしてください。旧構成でのみ、指定したカテゴリの権限・配置を引き継ぎます。</small>
             </label>
 
             <label class="field">

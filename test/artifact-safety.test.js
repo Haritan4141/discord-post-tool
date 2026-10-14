@@ -69,7 +69,9 @@ async function waitForFile(file, timeoutMs = 30000) {
 
 async function withArgv(args, action) {
   const previous = process.argv;
-  process.argv = [process.execPath, "test-cli", ...args];
+  // These regression cases exercise the existing channel layout.
+  process.argv = [process.execPath, "test-cli", ...args,
+    ...(!args.includes("--output") ? ["--posting-layout", "channels"] : [])];
   try {
     return await action();
   } finally {
@@ -622,7 +624,7 @@ test("different manifests run concurrently in one runtime registry", async (t) =
   `;
   const makeArgs = (manifest, guild) => [
     "run", "--input", inputDir, "--manifest", manifest, "--guild", guild,
-    "--token", "fixture-token", "--yes", "--no-remote-check",
+    "--token", "fixture-token", "--yes", "--no-remote-check", "--posting-layout", "channels",
   ];
   const barrierReady = path.join(root, "a-ready");
   const barrierResume = path.join(root, "a-resume");

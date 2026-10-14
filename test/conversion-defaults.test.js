@@ -6,6 +6,7 @@ const vm = require("node:vm");
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const sharp = require("sharp");
+const { PDFDocument } = require("pdf-lib");
 const test = require("node:test");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -55,7 +56,24 @@ test("default CLI conversion preserves explicit serial output and skips existing
   assert.equal(a.pdf.selectedQuality, b.pdf.selectedQuality);
   assert.equal(a.pdf.selectedLongEdge, b.pdf.selectedLongEdge);
   assert.equal(a.zip.sha256, b.zip.sha256);
-  assert.equal(a.pdf.bytes, b.pdf.bytes);
+  const [defaultPdf, serialPdf] = await Promise.all([
+    fs.readFile(path.join(output, category, profileName.replace(/\.assets\.json$/, ".pdf"))),
+    fs.readFile(path.join(serial, category, profileName.replace(/\.assets\.json$/, ".pdf"))),
+  ]);
+  assert.equal(a.pdf.bytes, defaultPdf.length);
+  assert.equal(b.pdf.bytes, serialPdf.length);
+  // pdf-lib stamps CreationDate and ModDate when saving a document, and its
+  // object serialization can differ between independent child processes.
+  // Compare the stable PDF contract (page count and dimensions); the exact
+  // JPEG bytes used to build those pages are compared below.
+  const [defaultDocument, serialDocument] = await Promise.all([
+    PDFDocument.load(defaultPdf),
+    PDFDocument.load(serialPdf),
+  ]);
+  assert.equal(defaultDocument.getPageCount(), serialDocument.getPageCount());
+  for (let index = 0; index < defaultDocument.getPageCount(); index += 1) {
+    assert.deepEqual(defaultDocument.getPage(index).getSize(), serialDocument.getPage(index).getSize());
+  }
   const jpgNames = (await fs.readdir(path.join(output, category), { recursive: true }))
     .filter(name => name.endsWith(".jpg"));
   assert.equal(jpgNames.length, 3);

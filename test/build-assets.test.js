@@ -264,7 +264,7 @@ test("falls below quality 70 when possible and adaptively splits when required",
     (error) => error.code === "ENOENT"
   );
 
-  const uploadPlan = runBuild([POST_SCRIPT, "plan", "--input", strictOutputDir]);
+  const uploadPlan = runBuild([POST_SCRIPT, "plan", "--input", strictOutputDir, "--posting-layout", "channels"]);
   assert.equal(uploadPlan.status, 0, uploadPlan.stderr || uploadPlan.stdout);
   assert.match(uploadPlan.stdout, /Plan: 1 categories, 1 channels, 4 files/);
   assert.match(uploadPlan.stdout, /# heavy/);

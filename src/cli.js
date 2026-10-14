@@ -5,6 +5,8 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { withResources, canonicalPath } = require("./runtime-locks");
 const { discordFetch } = require("./discord-request");
+const { prepareForumPlan, executeForumPlan } = require("./forum-post");
+const { own, put } = require("./forum-folders");
 
 const API_BASE = "https://discord.com/api/v10";
 const CHANNEL_TYPES = {
@@ -65,17 +67,18 @@ class DiscordApi {
     return this.request("POST", `/guilds/${guildId}/channels`, { json: payload });
   }
 
-  getRecentMessages(channelId, limit = 100) {
-    return this.request("GET", `/channels/${channelId}/messages?limit=${limit}`);
+  getRecentMessages(channelId, limit = 100, before = null) {
+    return this.request("GET", `/channels/${channelId}/messages?limit=${limit}` +
+      (before ? `&before=${encodeURIComponent(before)}` : ""));
   }
 
-  async createMessage(channelId, payload, files) {
+  async attachmentForm(payload, files, forum = false) {
     const form = new FormData();
     const attachments = [];
 
     for (let index = 0; index < files.length; index += 1) {
       const file = files[index];
-      const bytes = await fs.readFile(file.path);
+      const bytes = file.data || await fs.readFile(file.path);
       const blob = new Blob([bytes], { type: file.mime });
       form.append(`files[${index}]`, blob, file.name);
       attachments.push({
@@ -86,14 +89,24 @@ class DiscordApi {
 
     form.append(
       "payload_json",
-      JSON.stringify({
-        ...payload,
-        allowed_mentions: { parse: [] },
-        attachments,
-      })
+      JSON.stringify(forum ? {
+        ...payload, message: { ...payload.message, allowed_mentions: { parse: [] }, attachments },
+      } : { ...payload, allowed_mentions: { parse: [] }, attachments })
     );
 
-    return this.request("POST", `/channels/${channelId}/messages`, { form });
+    return form;
+  }
+
+  async createMessage(channelId, payload, files) {
+    return this.request("POST", `/channels/${channelId}/messages`, {
+      form: await this.attachmentForm(payload, files),
+    });
+  }
+
+  async createForumThread(forumId, payload, files) {
+    return this.request("POST", `/channels/${forumId}/threads`, {
+      form: await this.attachmentForm(payload, files, true),
+    });
   }
 }
 
@@ -113,6 +126,12 @@ async function main(options = {}) {
   }
 
   const inputDir = path.resolve(process.cwd(), String(args.input || "./example"));
+  const postingLayout = String(args["posting-layout"] || "forum").toLowerCase();
+  const forumLayout = String(args["forum-layout"] || "gallery").toLowerCase();
+  const forumParent = args["forum-parent"] ? String(args["forum-parent"]).trim() : null;
+  if (!["forum", "channels"].includes(postingLayout)) throw new Error("--posting-layout must be forum or channels");
+  if (!["gallery", "list"].includes(forumLayout)) throw new Error("--forum-layout must be gallery or list");
+  if (forumParent && !/^\d+$/.test(forumParent)) throw new Error("--forum-parent must be a Discord category ID");
   const uploadMode = String(args["upload-mode"] || "auto").toLowerCase();
   if (!["auto", "bundle", "separate"].includes(uploadMode)) {
     throw new Error("--upload-mode must be one of: auto, bundle, separate");
@@ -157,24 +176,42 @@ async function main(options = {}) {
       limit,
       maxFileBytes: mibToBytes(maxFileMiB),
       maxRequestBytes: mibToBytes(maxRequestMiB),
+      postingLayout,
     });
-    printPlan(plan, { uploadMode, maxFileMiB, maxRequestMiB, categoryFilter, limit });
-    if (command === "plan") return;
-    assertRunnablePlan(plan);
+    assertRunnablePlan(plan, postingLayout);
+    if (plan.hasNestedLayout && forumParent) {
+      throw new Error(
+        "--forum-parent cannot be used with the category/forum folder layout; leave it empty so each folder category is resolved by name."
+      );
+    }
     await validateGeneratedOutputs(plan);
-    const manifest = await loadManifest(manifestWritePlan.manifestPath);
-    const api = options.apiFactory ? options.apiFactory(token) : new DiscordApi(token);
-    await executePlan({
-      api, guildId, plan, manifest, manifestPath: manifestWritePlan.manifestPath, uploadMode, remoteCheck,
-      recreateMissing, maxRequestBytes: mibToBytes(maxRequestMiB),
+    const manifest = await loadManifest(manifestWritePlan?.manifestPath || manifestPath);
+    if (postingLayout === "forum") await prepareForumPlan({
+      plan, manifest, guildId, maxFileBytes: mibToBytes(maxFileMiB),
+      maxRequestBytes: mibToBytes(maxRequestMiB), uploadMode,
     });
+    printPlan(plan, { uploadMode, maxFileMiB, maxRequestMiB, categoryFilter, limit, postingLayout });
+    if (command === "plan") return;
+    const api = options.apiFactory ? options.apiFactory(token) : new DiscordApi(token);
+    const context = {
+      api, guildId, plan, manifest, manifestPath: manifestWritePlan.manifestPath, uploadMode, remoteCheck,
+      recreateMissing, maxRequestBytes: mibToBytes(maxRequestMiB), maxFileBytes: mibToBytes(maxFileMiB),
+      forumLayout, forumParent, saveManifest,
+    };
+    await (postingLayout === "forum" ? executeForumPlan(context) : executePlan(context));
   }, {
     runtimeDir: options.runtimeDir,
     label: command === "run" ? "Discord投稿" : "投稿計画",
   });
 }
 
-async function buildLocalPlan(inputDir, options) {
+async function buildLocalPlan(inputDir, options = {}) {
+  options = {
+    ...options,
+    categoryFilter: options.categoryFilter ?? null,
+    limit: options.limit === undefined ? null : options.limit,
+    postingLayout: options.postingLayout || "channels",
+  };
   const inputStat = await fs.stat(inputDir).catch(() => null);
   if (!inputStat || !inputStat.isDirectory()) {
     throw new Error(`Input directory does not exist: ${inputDir}`);
@@ -193,99 +230,66 @@ async function buildLocalPlan(inputDir, options) {
   }
 
   const categories = [];
+  const nestedParentNames = new Set();
+  const planWarnings = [];
   let remainingLimit = options.limit;
 
-  for (const categoryName of categoryDirs) {
-    const categoryPath = path.join(inputDir, categoryName);
-    const fileEntries = await fs.readdir(categoryPath, { withFileTypes: true });
-    const fileGroups = new Map();
-
-    for (const entry of fileEntries) {
-      if (!entry.isFile()) {
+  for (const rootName of categoryDirs) {
+    if (remainingLimit !== null && remainingLimit <= 0) break;
+    const rootPath = path.join(inputDir, rootName);
+    const layout = await inspectPostInputDirectory(rootPath, { allowEmpty: true });
+    if (layout.kind === "empty") {
+      planWarnings.push(...(layout.warnings || []).map((warning) => `${rootPath}: ${warning}`));
+      continue;
+    }
+    if (layout.kind === "flat") {
+      const collected = await collectPlanGroups(rootPath, options);
+      if (collected.groups.length === 0) {
+        planWarnings.push(...collected.warnings.map((warning) => `${rootPath}: ${warning}`));
         continue;
       }
-
-      const ext = path.extname(entry.name).toLowerCase();
-      if (ext !== ".zip" && ext !== ".pdf") {
-        continue;
-      }
-
-      const fileBaseName = path.basename(entry.name, ext);
-      const parsedBaseName = parsePartFileBaseName(fileBaseName);
-      const groupBaseName = parsedBaseName.groupBaseName;
-      if (!fileGroups.has(groupBaseName)) {
-        fileGroups.set(groupBaseName, {
-          baseName: groupBaseName,
-          channelName: "",
-          files: [],
-          warnings: [],
+      const category = makePlanCategory({
+        name: rootName,
+        path: rootPath,
+        groups: collected.groups,
+        parentName: null,
+        inputWarnings: collected.warnings,
+        options,
+      });
+      appendSelectedCategory(categories, category, () => {
+        if (remainingLimit === null) return;
+        const selected = category.groups.slice(0, remainingLimit);
+        remainingLimit -= selected.length;
+        category.groups = selected;
+      });
+    } else {
+      planWarnings.push(...(layout.warnings || []).map((warning) => `${rootPath}: ${warning}`));
+      for (const forum of layout.forums) {
+        if (remainingLimit !== null && remainingLimit <= 0) break;
+        const collected = await collectPlanGroups(forum.path, options, { allowEmpty: true });
+        if (collected.groups.length === 0) {
+          planWarnings.push(...collected.warnings.map((warning) => `${forum.path}: ${warning}`));
+          continue;
+        }
+        nestedParentNames.add(rootName);
+        const category = makePlanCategory({
+          name: forum.name,
+          path: forum.path,
+          groups: collected.groups,
+          parentName: rootName,
+          inputWarnings: collected.warnings,
+          options,
+        });
+        appendSelectedCategory(categories, category, () => {
+          if (remainingLimit === null) return;
+          const selected = category.groups.slice(0, remainingLimit);
+          remainingLimit -= selected.length;
+          category.groups = selected;
         });
       }
-
-      const filePath = path.join(categoryPath, entry.name);
-      const stat = await fs.stat(filePath);
-      const type = ext.slice(1);
-      fileGroups.get(groupBaseName).files.push({
-        type,
-        name: entry.name,
-        path: filePath,
-        size: stat.size,
-        mime: ext === ".pdf" ? "application/pdf" : "application/zip",
-        fileBaseName,
-        part: parsedBaseName.part,
-      });
     }
 
-    const groups = Array.from(fileGroups.values()).sort((a, b) =>
-      compareNames(a.baseName, b.baseName)
-    );
-
-    for (const group of groups) {
-      group.files.sort(compareUploadFiles);
-    }
-
-    assignUniqueChannelNames(groups);
-
-    for (const group of groups) {
-      for (const part of groupParts(group)) {
-        if (!part.files.zip) {
-          group.warnings.push(`${part.label}: zip file is missing`);
-        }
-        if (!part.files.pdf) {
-          group.warnings.push(`${part.label}: pdf file is missing`);
-        }
-      }
-
-      const files = groupFiles(group);
-      for (const file of files) {
-        if (file.size > options.maxFileBytes) {
-          group.warnings.push(`${file.name} exceeds max file size`);
-        }
-      }
-
-      const requestSize = sumSizes(files);
-      if (requestSize > options.maxRequestBytes) {
-        group.warnings.push("all files exceed max request size; auto mode will upload separately");
-      }
-    }
-
-    let selectedGroups = groups;
-    if (remainingLimit !== null) {
-      selectedGroups = groups.slice(0, remainingLimit);
-      remainingLimit -= selectedGroups.length;
-    }
-
-    categories.push({
-      name: categoryName,
-      path: categoryPath,
-      groups: selectedGroups,
-      originalGroupCount: groups.length,
-      warnings: selectedGroups.length > 50 ? ["Discord categories can contain up to 50 channels"] : [],
-    });
-
-    if (remainingLimit !== null && remainingLimit <= 0) {
-      break;
-    }
+    if (remainingLimit !== null && remainingLimit <= 0) break;
   }
 
   const totals = categories.reduce(
@@ -299,14 +303,191 @@ async function buildLocalPlan(inputDir, options) {
       }
       return acc;
     },
-    { categories: 0, groups: 0, files: 0, bytes: 0 }
+    { categories: 0, forums: 0, parentCategories: 0, groups: 0, files: 0, bytes: 0 }
   );
+  totals.forums = categories.length;
+  totals.parentCategories = nestedParentNames.size;
 
   return {
     inputDir,
     categories,
     totals,
+    hasNestedLayout: nestedParentNames.size > 0,
+    warnings: planWarnings,
   };
+}
+
+const IMAGE_FILE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
+
+function isPreviewImageDirectory(name) {
+  return /_jpg$/i.test(name);
+}
+
+function isWindowsMetadataFile(name) {
+  return /^(?:thumbs\.db|desktop\.ini)$/i.test(name);
+}
+
+function isKnownOutputMetadata(name) {
+  return /\.assets(?:\.pending)?\.json$/i.test(name) || /\.pending$/i.test(name);
+}
+
+function isUploadFile(name) {
+  const ext = path.extname(name).toLowerCase();
+  return ext === ".zip" || ext === ".pdf";
+}
+
+function isRawImageFile(name) {
+  return IMAGE_FILE_EXTENSIONS.has(path.extname(name).toLowerCase());
+}
+
+async function inspectPostInputDirectory(directory, { allowEmpty = false } = {}) {
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+  const files = entries.filter((entry) => entry.isFile());
+  const uploadFiles = files.filter((entry) => isUploadFile(entry.name));
+  const rawImages = files.filter((entry) => isRawImageFile(entry.name));
+  const unknownFiles = files.filter((entry) =>
+    !isUploadFile(entry.name) &&
+    !isKnownOutputMetadata(entry.name) &&
+    !isWindowsMetadataFile(entry.name)
+  );
+  const ignoredWarnings = unknownFiles.length > 0
+    ? [`ignored unrelated file(s): ${unknownFiles.map((entry) => entry.name).join(", ")}`]
+    : [];
+  const metadataFiles = files.filter((entry) => isKnownOutputMetadata(entry.name));
+  const childDirs = entries.filter((entry) => entry.isDirectory());
+  const uploadBaseNames = new Set(uploadFiles.map((entry) =>
+    path.basename(entry.name, path.extname(entry.name)).toLocaleLowerCase()
+  ));
+  const previewDirs = new Set(childDirs
+    .filter((entry) => isPreviewImageDirectory(entry.name))
+    .filter((entry) => uploadBaseNames.has(
+      entry.name.slice(0, -"_jpg".length).toLocaleLowerCase()
+    ))
+    .map((entry) => entry.name));
+  const forumDirs = childDirs.filter((entry) => !previewDirs.has(entry.name));
+
+  if (rawImages.length > 0) {
+    throw new Error(`${directory}: raw input images were found in a posting folder; run the image conversion first.`);
+  }
+  if (uploadFiles.length > 0) {
+    if (forumDirs.length > 0) {
+      throw new Error(`${directory}: shallow and nested category/forum layouts are mixed; put ZIP/PDF files either directly here or under forum folders.`);
+    }
+    return { kind: "flat", warnings: ignoredWarnings };
+  }
+
+  if (metadataFiles.length > 0 && forumDirs.length > 0) {
+    throw new Error(`${directory}: shallow output metadata is mixed with nested category/forum folders; resolve the output layout before posting.`);
+  }
+
+  if (forumDirs.length === 0) {
+    if (childDirs.length > 0) {
+      if (allowEmpty && childDirs.every((entry) => isPreviewImageDirectory(entry.name))) {
+        return { kind: "empty", warnings: ignoredWarnings };
+      }
+      throw new Error(`${directory}: only *_jpg preview folders were found and no ZIP/PDF output exists.`);
+    }
+    if (files.length > 0) {
+      if (allowEmpty && files.every((entry) => isWindowsMetadataFile(entry.name))) {
+        return { kind: "empty", warnings: ignoredWarnings };
+      }
+      if (metadataFiles.length > 0) {
+        throw new Error(`${directory}: generated profile/pending metadata exists without its ZIP/PDF output.`);
+      }
+      if (allowEmpty) return { kind: "empty", warnings: ignoredWarnings };
+      throw new Error(`${directory}: no ZIP/PDF output exists.`);
+    }
+    if (allowEmpty) return { kind: "empty", warnings: ignoredWarnings };
+    throw new Error(`${directory}: no forum works were found.`);
+  }
+
+  return {
+    kind: "nested",
+    forums: forumDirs.sort((a, b) => compareNames(a.name, b.name)).map((entry) => ({
+      name: entry.name,
+      path: path.join(directory, entry.name),
+    })),
+  };
+}
+
+async function collectPlanGroups(categoryPath, options, inspectOptions = {}) {
+  const layout = await inspectPostInputDirectory(categoryPath, inspectOptions);
+  if (layout.kind === "empty") return { groups: [], warnings: layout.warnings || [] };
+  if (layout.kind !== "flat") {
+    throw new Error(`${categoryPath}: category/forum layout is deeper than supported.`);
+  }
+  const fileEntries = await fs.readdir(categoryPath, { withFileTypes: true });
+  const fileGroups = new Map();
+
+  for (const entry of fileEntries) {
+    if (!entry.isFile() || !isUploadFile(entry.name)) continue;
+    const ext = path.extname(entry.name).toLowerCase();
+    const fileBaseName = path.basename(entry.name, ext);
+    const parsedBaseName = parsePartFileBaseName(fileBaseName);
+    const groupBaseName = parsedBaseName.groupBaseName;
+    if (!fileGroups.has(groupBaseName)) {
+      fileGroups.set(groupBaseName, {
+        baseName: groupBaseName,
+        channelName: "",
+        files: [],
+        warnings: [],
+      });
+    }
+
+    const filePath = path.join(categoryPath, entry.name);
+    const stat = await fs.stat(filePath);
+    const type = ext.slice(1);
+    fileGroups.get(groupBaseName).files.push({
+      type,
+      name: entry.name,
+      path: filePath,
+      size: stat.size,
+      mime: ext === ".pdf" ? "application/pdf" : "application/zip",
+      fileBaseName,
+      part: parsedBaseName.part,
+    });
+  }
+
+  const groups = Array.from(fileGroups.values()).sort((a, b) => compareNames(a.baseName, b.baseName));
+  for (const group of groups) group.files.sort(compareUploadFiles);
+  assignUniqueChannelNames(groups);
+
+  for (const group of groups) {
+    for (const part of groupParts(group)) {
+      if (!part.files.zip) group.warnings.push(`${part.label}: zip file is missing`);
+      if (!part.files.pdf) group.warnings.push(`${part.label}: pdf file is missing`);
+    }
+    const files = groupFiles(group);
+    for (const file of files) {
+      if (options.maxFileBytes !== undefined && file.size > options.maxFileBytes) {
+        group.warnings.push(`${file.name} exceeds max file size`);
+      }
+    }
+    if (options.maxRequestBytes !== undefined && sumSizes(files) > options.maxRequestBytes) {
+      group.warnings.push("all files exceed max request size; auto mode will upload separately");
+    }
+  }
+  return { groups, warnings: layout.warnings || [] };
+}
+
+function makePlanCategory({ name, path: categoryPath, groups, parentName, inputWarnings = [], options }) {
+  const warnings = [...inputWarnings];
+  if (options.postingLayout !== "forum" && groups.length > 50) {
+    warnings.push("Discord categories can contain up to 50 channels");
+  }
+  return {
+    name,
+    ...(parentName ? { parentName } : {}),
+    path: categoryPath,
+    groups,
+    originalGroupCount: groups.length,
+    warnings,
+  };
+}
+
+function appendSelectedCategory(categories, category, select) {
+  select();
+  categories.push(category);
 }
 
 function isManifestStagingDirectory(name) {
@@ -430,11 +611,23 @@ function compareUploadFiles(a, b) {
 }
 
 function printPlan(plan, options) {
+  const forum = options.postingLayout === "forum";
   console.log(`Input: ${plan.inputDir}`);
-  console.log(
-    `Plan: ${plan.totals.categories} categories, ${plan.totals.groups} channels, ` +
-      `${plan.totals.files} files, ${formatBytes(plan.totals.bytes)}`
-  );
+  if (plan.hasNestedLayout) {
+    console.log(
+      `Plan: ${plan.totals.parentCategories} Discord categories, ${plan.totals.forums} ${forum ? "forums" : "forum folders"}, ` +
+        `${plan.totals.groups} ${forum ? "works" : "channels"}, ${plan.totals.files} files, ${formatBytes(plan.totals.bytes)}`
+    );
+  } else {
+    console.log(
+      `Plan: ${plan.totals.categories} ${forum ? "forums" : "categories"}, ${plan.totals.groups} ${forum ? "works" : "channels"}, ` +
+        `${plan.totals.files} files, ${formatBytes(plan.totals.bytes)}`
+    );
+  }
+  if (forum) console.log("Forum: images in batches of up to 10, then ZIP/PDF; existing channel uploads stay in place.");
+  for (const warning of plan.warnings || []) {
+    console.log(`! ${warning}`);
+  }
   console.log(
     `Upload mode: ${options.uploadMode} / max file ${options.maxFileMiB} MiB / ` +
       `max bundled request ${options.maxRequestMiB} MiB`
@@ -443,7 +636,7 @@ function printPlan(plan, options) {
     console.log(`Category filter: ${options.categoryFilter}`);
   }
   if (options.limit !== null) {
-    console.log(`Limit: ${options.limit} channel(s)`);
+    console.log(`Limit: ${options.limit} ${forum ? "work(s)" : "channel(s)"}`);
   }
 
   for (const category of plan.categories) {
@@ -452,7 +645,10 @@ function printPlan(plan, options) {
         ? ""
         : ` (${category.groups.length}/${category.originalGroupCount} selected)`;
     console.log("");
-    console.log(`[${category.name}] ${category.groups.length} channel(s)${suffix}`);
+    const categoryLabel = category.parentName
+      ? `${category.parentName} / ${category.name}`
+      : category.name;
+    console.log(`[${categoryLabel}] ${category.groups.length} ${forum ? "work(s)" : "channel(s)"}${suffix}`);
 
     for (const warning of category.warnings) {
       console.log(`  ! ${warning}`);
@@ -466,8 +662,10 @@ function printPlan(plan, options) {
         sanitizeChannelName(group.baseName) === group.channelName
           ? ""
           : ` (channel: ${group.channelName})`;
-      console.log(`  # ${group.channelName}${renameNote}`);
+      console.log(forum ? `  Post: ${group.baseName}` : `  # ${group.channelName}${renameNote}`);
       console.log(`    ${files || "no uploadable files"}`);
+      if (forum) console.log(group.legacy ? "    Existing channel: resume/skip without migration" :
+        `    ${group.albumPlan.imageCount} images, ${group.albumPlan.batches.length} messages, ${formatBytes(group.albumPlan.bytes)} total attachments`);
       for (const warning of group.warnings) {
         console.log(`    ! ${warning}`);
       }
@@ -475,10 +673,13 @@ function printPlan(plan, options) {
   }
 }
 
-function assertRunnablePlan(plan) {
+function assertRunnablePlan(plan, postingLayout = "channels") {
   const problems = [];
+  if (plan.hasNestedLayout && postingLayout !== "forum") {
+    problems.push("The category/forum folder layout requires --posting-layout forum; the legacy channels layout cannot represent it safely.");
+  }
   for (const category of plan.categories) {
-    if (category.groups.length > 50) {
+    if (postingLayout !== "forum" && category.groups.length > 50) {
       problems.push(`${category.name}: more than 50 channels`);
     }
 
@@ -614,6 +815,11 @@ async function createManifestWritePlan(manifestPath) {
 async function executePlan(context) {
   const { api, guildId, plan, manifest, manifestPath, recreateMissing } = context;
   const guildManifest = ensureGuildManifest(manifest, guildId);
+  for (const category of plan.categories) for (const group of category.groups) {
+    if (guildManifest.categories[category.name]?.groups?.[group.baseName]?.forum) {
+      throw new Error(`${group.baseName}: フォーラムで開始済みの作品です。重複防止のため --posting-layout forum で再開してください。`);
+    }
+  }
 
   console.log("");
   console.log("Fetching Discord channels...");
@@ -1011,30 +1217,30 @@ async function saveManifest(manifestPath, manifest) {
 
 function ensureGuildManifest(manifest, guildId) {
   manifest.guilds ||= {};
-  manifest.guilds[guildId] ||= { categories: {} };
-  manifest.guilds[guildId].categories ||= {};
-  return manifest.guilds[guildId];
+  const guild = own(manifest.guilds, guildId) || put(manifest.guilds, guildId, { categories: {} });
+  guild.categories ||= {};
+  return guild;
 }
 
 function ensureCategoryManifest(guildManifest, categoryName) {
-  guildManifest.categories[categoryName] ||= {
+  const category = own(guildManifest.categories, categoryName) || put(guildManifest.categories, categoryName, {
     id: null,
     name: categoryName,
     groups: {},
-  };
-  guildManifest.categories[categoryName].groups ||= {};
-  return guildManifest.categories[categoryName];
+  });
+  category.groups ||= {};
+  return category;
 }
 
 function ensureGroupManifest(guildManifest, categoryName, baseName) {
   const category = ensureCategoryManifest(guildManifest, categoryName);
-  category.groups[baseName] ||= {
+  const group = own(category.groups, baseName) || put(category.groups, baseName, {
     channelId: null,
     channelName: null,
     files: {},
-  };
-  category.groups[baseName].files ||= {};
-  return category.groups[baseName];
+  });
+  group.files ||= {};
+  return group;
 }
 
 function isPosted(groupManifest, file, channelId) {
@@ -1221,13 +1427,16 @@ Commands:
   run                  Create missing categories/channels and upload files
 
 Options:
+  --posting-layout <mode> forum | channels. Default: forum (legacy channel uploads stay in place)
+  --forum-layout <mode> gallery | list. Default: gallery
+  --forum-parent <id>  Existing category for old flat layout; leave empty for nested folder layout
   --input <path>       Input folder. Default: ./example
   --guild <id>         Discord server ID. Required for run unless env is set
   --token <token>      Discord bot token. Required for run unless env is set
   --upload-mode <mode> auto | bundle | separate. Default: auto
   --manifest <path>    Manifest path. Default: ./.discord-post-tool-manifest.json
-  --category <name>    Only process one category directory
-  --limit <n>          Process only the first n planned channels
+  --category <name>    Only process one category folder (nested layout: Discord category name)
+  --limit <n>          Process only the first n planned works
   --max-file-mib <n>   Per-file preflight limit. Default: 10
   --max-request-mib <n> Bundled upload preflight limit. Default: 25
   --no-remote-check    Do not check recent messages for existing attachments
@@ -1245,4 +1454,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { main, DiscordApi };
+module.exports = { main, DiscordApi, buildLocalPlan };

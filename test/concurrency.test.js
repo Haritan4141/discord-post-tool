@@ -49,7 +49,7 @@ const go = () => new Promise(resolve => process.once("message", resolve));
     process.env.DISCORD_BOT_TOKEN = "fixture-token-not-a-secret";
     process.env.DISCORD_GUILD_ID = args.guild;
     process.argv = [process.execPath, "cli", "run", "--input", args.input,
-      "--manifest", args.manifest, "--yes"];
+      "--manifest", args.manifest, "--yes", "--posting-layout", "channels"];
     const remoteFile = path.join(process.cwd(), "remote-" + args.guild + ".json");
     let remote = {channels: [], messages: [], sequence: 0};
     try { remote = JSON.parse(await fs.readFile(remoteFile, "utf8")); }

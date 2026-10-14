@@ -1,5 +1,78 @@
 # AI Context
 
+## 2026-10-14 ユーザー実投稿試験完了・Git公開承認
+
+- **最新の明示承認:** ユーザーが「投稿のテストも完了したのでよさそう」と報告し、今回の実装をmainへcommit/pushしてrirr側も同期するよう依頼。以下の実装段落にある「未commit/push」「Git公開は別途確認」は合格時点の履歴であり、この承認で更新された。
+- **確認した範囲:** ユーザーによる実地試験完了の報告に加え、メインのローカル投稿manifestでも試験用GuildのfolderCategories/20261014に2Forum・各3作品が記録され、6作品すべてのbatchがdoneだった。imageCountは合計600、batch/message記録は合計66。今回の公開作業ではDiscord APIへの追加投稿・権限変更を行わず、ローカル履歴を読み取り確認した。実データ長時間・大量投稿、全添付の新たなCDN hash照合、スマホ表示を今回独立検証したとは扱わない。
+- **公開範囲/保全:** Forum画像アルバム、カテゴリ/Forum/作品の階層保持、GUI、再開/重複防止、既存互換、テスト、README/本contextの20ファイルだけを対象とする。.env、投稿manifest、raw_images/optimized_*、tmp、ユーザー作成の未追跡フォルダは追加しない。依存更新・force push・履歴書換え・ユーザーデータ整理は行わない。両cloneの検証済みソースを照合し、rirrの同じローカル差分は対象ファイル限定のstashで保全したうえでmainへfast-forward更新する。以前のstashも保持する。
+- **検証/運用:** コードの最終自動検証は両clone各100/100成功、GUI smoke両方成功。新規カテゴリはユーザー承認の全員閲覧、既存カテゴリは権限保持、新設Forumは年齢制限付き。画像の非表示は閲覧者ごとのフィルター設定も確認する。現在のDiscord設定画面では「メッセージの権限 → コンテンツフィルター → サーバーチャンネル内のメッセージ」にある。年齢制限はサーバー側フィルターと閲覧者側表示設定を同一視しない。
+- **公開実行結果の確認先:** Gitのmain/origin/mainとrirrのHEAD/作業ツリー、メインのGit対象外tmp/forum-release-20261014内の公開記録・保全hashを参照する。commit SHAはGit履歴を正とし、このファイルに自己参照SHAを埋め込まない。
+
+## 2026-10-14 カテゴリ/フォーラム/作品のフォルダ階層対応
+
+- **最新の依頼/確認:** ユーザーが raw_images/<カテゴリ>/<フォーラム>/<作品>/画像 の配置を毎回使う方針を承認し、変換/投稿の対応を依頼。メインの実フォルダは20261014の下に2フォーラム、各3作品、各100 PNG（計6作品/600枚）。構造の読み取りと変換planで6作品を認識した。ユーザーの画像を変換・投稿する操作は今回行わない。両cloneの実装/テスト/資料だけを同期し、Git公開は別途確認する。
+- **閲覧方針の明示回答:** ユーザーは新規カテゴリを全員閲覧可能にしたいと回答。新設categoryは@everyoneのVIEW_CHANNELを許可する。既存の同名カテゴリは設定を変更せず再利用し、そのpermission overwritesを子Forumへ引き継ぐ。新設Forumは年齢制限付き/Gallery既定を維持する。Community・Botロール・既存カテゴリの権限は自動変更しない。
+- **実装:** 変換は optimized_webp_pdf/<カテゴリ>/<フォーラム>/<作品>.zip/.pdf/.assets.json に出力する。投稿計画はparentName/nameで親カテゴリ/Forumを分離し、同名Forum・作品が別親にあっても独立に扱う。親カテゴリID欄は新階層では空欄、旧浅い構成のみ明示ID指定を使う。入力rootはraw_images、投稿rootはoptimized_webp_pdfにする。カテゴリやForum途中をrootに指定すると階層の意味が変わるため、全体rootを選択する。旧浅い画像/出力構成と投稿履歴は互換維持するが、旧記録済み作品を新階層へ移動した場合は自動再投稿/Discord移動せず停止する。
+- **履歴/安全:** src/forum-folders.jsでnested journalをguild.folderCategories[parent].forums[forum]へ分離し、旧guild.categoriesを保持する。カテゴリ作成前にintentを原子保存し、応答不明時は同名/種類/全overwrite一致を確認する。結果不明の再作成、同名親の曖昧な選択、保存済み親/Forumの移動・改名・削除は停止する。サーバー500枠・カテゴリ50件・親内50チャンネルを新カテゴリと新Forumを含めて事前確認する。深すぎる階層/画像直下と子作品の混在/投稿入力へのraw画像混入は安全停止する。作品名のUnicode合成/分解表記は別名として保持する。
+- **100枚の取得元:** 個別画像を出力フォルダへ保存する必要はない。完成ZIP内のWebPをCRC/hash/形式/展開容量検証付きでメモリ上から読み、従来どおり最大10枚ずつ送る。最後にZIP/PDFを送信する。変換品質、分割、profile/pending検証、API待機、排他、再開/スキップを維持する。
+- **独立レビュー/仕上げ:** カテゴリ/Forum作成の設定不一致2xx、初回threadの名前/スターターメッセージのchannel/id、添付ID欠落を検査し、結果未確定のjournalを保持してGET照合で復旧するテストを追加。旧channels側もprototype名の安全なmanifestキー処理を共有した。CREATE_PUBLIC_THREADS追加要求のレビュー候補は公式Forum APIが同権限を無視しSEND_MESSAGESを要求すると明記しているため採用しない（https://docs.discord.com/developers/resources/channel#start-thread-in-forum-or-media-channel、2026-10-14再確認）。fixtureも同bitなしで正常投稿を検証している。manifest紛失に加えてForumを別親へ移動/改名した場合の関連推定は保証しないため、manifest保持をREADMEにも明記した。浅い/新階層の両方に同じForum名/作品名がある計画は事前停止し、カテゴリフィルタなどで一方を選択する。
+- **最終検証/同期:** 新規25テスト（階層変換3、計画5、カテゴリ/Forum投稿17）を追加し、応答検査の仕上げ後もメイン/rirr各npm test 100/100成功。架空PNG100枚→入れ子ZIP/PDF/profile→模擬APIで11メッセージ/102添付→再実行追加0→生成ZIP改変の事前拒否まで確認。実raw_imagesの変換planは6作品を認識。両GUI smokeでready:true・キャッシュエラーなし、今回変更10ファイルのSHA-256一致、構文/両git diff --check成功、両.env/実manifest計4ファイルのSHA-256不変を確認。READMEと本contextを再読込/同期し、今回のcommit/push・依存更新・ユーザーデータ整理は未実施。証拠はGit対象外tmp/folder-forum-implementation-20261014のfull-test-*-final.log、user-layout-plan.log、sync-files.json、protected-before/after.json。本番Discordへの書き込み、入力画像/生成物の変更は未実施。新階層での今回の投稿検証は模擬APIまでであり、実Discordは前節の旧浅いForum方式で100枚＋ZIP/PDFが合格済みという範囲を区別する。
+
+## 2026-10-14 フォーラム画像アルバム方式の実装・試験
+
+- **最新の承認/方針:** ユーザーがメイン/rirr両方をForum/Gallery既定へ切り替える実装と、試験用Guildで画像100枚＋最後ZIP/PDFまでの検証を承認。過去の「rirrは従来方式を維持」「調査のみ」はこの依頼で更新された。既存作品のDiscord移行・本番Community/権限変更・本番投稿・commit/pushは今回行わない。
+- **実装:** src/forum-assets.jsはZIPをディスク展開せず、central/local header・CRC・WebP signature・容量/展開数・暗号化/ZIP64/危険パスを検査。src/forum-post.jsは入力カテゴリ名→Forum、作品名→1thread。初回10枚をランダム選択し、残りは元順序で各10枚/容量上限、最後にZIP/PDF（重い作品の全partも集約）。再変換せず既存WebPを利用。本文なし・メンションなし・通知抑制。API上限25MiB/10添付とmultipart余裕48KiBを守る。新設Forumは年齢制限付き、Gallery/作成日時順が既定。GUI/CLIともforum/gallery既定で、GUIの旧localStorageは入力設定を保持して一度だけ移行する。
+- **履歴/排他/権限:** ランダム順・入力hash・各batchのnonce/送信中状態・thread/message/attachment IDを原子保存。未知POST結果はBot自身のメッセージをページングして照合し、確認不能なら再送しない。初回threadもactive/archiveを照合する。通常チャンネルIDを持つ旧manifestの作品（まだ0添付でも）は旧チャンネルで継続し、新規作品だけForumを使用。旧チャンネルの継続にも送信journal/nonceと未知結果照合を追加。既存のGuild/manifest/input排他、Bot共通429待機、生成物hash/pending検証は維持。Community・Bot権限・500枠/親50枠・保存済みForumの名前/親/Guild/年齢制限と閲覧設定を確認し、権限引継ぎ元不明の制限付きサーバーでは停止する。必要ならGUI/CLIで親カテゴリIDを指定する。本番サーバーの設定は自動変更しない。
+- **実Discord合格:** 2026-10-14T06:12:35.583Z、試験用1504181413937811517の検証100枚・20261014 Forum1559807884496216095 / 100枚テスト・WebPギャラリー thread1559809848156098577へ、架空の番号付き画像100枚を10添付×10メッセージ、最後ZIP/PDF2添付の計11メッセージ/102添付で送信。全102添付をCDNからダウンロードしサイズ/SHA-256が元ファイルと一致。本文空欄、再実行でmessage ID不変/追加送信0、既存16チャンネルのID/種類/親/権限/NSFW不変、両cloneの.env/本番manifestのhash不変を確認。同じ試験用Bot/manifestを使ってrirrのCLIでも再実行し、全リクエストGET・message ID不変を確認（rirr-live-rerun.json）。証拠はメインcloneのGit対象外tmp/forum-implementation-20261014/trial-acceptance.json、trial-manifest.json、trial-run.log、番号PNG/生成ZIP/PDF。
+- **実地で見つかった挙動:** Discord APIの添付filenameは日本語名を一部除去した（100枚テスト・WebPギャラリー.zip→100WebP.zip）が、titleとChrome表示は元の日本語名を保持。入力名だけに依存せず、返された添付ID/名前/容量とnonceを保存・照合する実装/回帰テストを追加。画像のASCII hash付き名は保持された。試験用の管理Chromeへユーザーが再ログインし、今回作成したForumのPostBotロールにSEND_MESSAGES_IN_THREADSだけを明示承認の下で許可。Guildロール全体や他のチャンネル権限は変更していない。設定証拠trial-permission.jpg。画像のGallery表示（loaded画像4枚）と末尾ZIP/PDFもChromeで確認済み、gallery-100.jpgとalbum-final-archives.jpgを保存した。
+- **テスト/残る範囲:** 模擬APIで100枚の重複/欠落、全ZIPpart集約、未知初回/返信POST、アーカイブ後/100件超履歴、変更入力、削除添付、403/408/不正2xx、通常チャンネル0添付からの継続、紛失manifestの重複防止、51作品/1Forumと容量/権限事前検査を検証。既存のPDF比較テストはpdf-libの生成日時に起因する1byte差を確認し、製品の変換処理を変えずにページ数/寸法/埋込元JPEG hashと実ファイルサイズを比較するよう修正した。本番での大量投稿・スマホ・実データ長時間試験は未実施。起動中GUIは自動再起動せず、新UIを使うには開き直す。
+- **最終検証/同期:** 15ファイルのコード/GUI/テスト/README/本contextを両cloneへ同期。最終npm testはメイン/rirr各75件成功（新規Forum投稿18、ZIP読取5、GUI3を含む）。両cloneの非表示Electron smokeでready:true、分離されたuserData/sessionData、キャッシュエラーなしを確認。構文検査と両git diff --checkも成功。独立レビューで見つかったthreadId/先頭batchの不整合、旧チャンネルの完了journal/fileの欠落も拒否する回帰テストを追加した。本番.env/manifestを保持し、依存更新・ユーザー未追跡フォルダの整理・Git commit/pushは行っていない。新規src/forum-assets.js/src/forum-post.jsとテスト3ファイルは未追跡の実装ファイルとして保持。詳細な検証ログはメインおよびrirrのtmp/forum-implementation-20261014/full-test-*-final.log。
+- **ユーザーGUI追試の停止原因:** 同日、実入力optimized_webp_pdfの限定作品1010を試験用へ投稿する際、親カテゴリID空欄で「新規フォーラムの閲覧制限を特定できません」と停止。GET照合では同名Forumなし、全5カテゴリはSEND_MESSAGES_IN_THREADSなし、閲覧overwriteを持つのは体験用運営通知のみ。現行ガードは同名の引継ぎ元/明示親がなく、サーバー内に閲覧overwriteが1件でもあると停止するため、非公開の運営通知もこの判定に該当した。Forum作成/画像送信の前の停止で、容量エラーではない。試験用の候補親はフォーラム体験・サンプル1559787078093643867だが、このIDだけを入力しても新規ForumのBot thread送信権限は不足する。前回の許可は検証100枚・20261014 Forumだけであり、今後の日付Forumに許可を広げる変更は別途ユーザー確認が必要。本番の権限や実作品の投稿はこの診断では変更していない。
+- **追試の解消/最新の試験用設定:** その後ユーザーが試験用PostBotだけのthread送信権限追加を明示承認。試験用1504181413937811517のmanaged PostBotロール1504186573623656592へSEND_MESSAGES_IN_THREADSのみ追加し、APIで変更前permissions | (1<<38)との完全一致、管理者権限追加なし、上記親カテゴリでも送信可能を確認。証拠trial-bot-role-before.json/trial-bot-role-change.json/trial-bot-thread-permission.jpg。GUIの「フォーラム親カテゴリID」へ1559787078093643867を入力すれば新規の日付Forumも生成できる。2026-10-14T06:55:46.436Z、同親の下へ再試験・20261014 Forum1559821683798310973を実CLIから自動作成し、架空の番号画像100枚＋最後ZIP/PDFをthread1559821689859084348へ11メッセージ/102添付で送信。全添付の容量/SHA-256一致を確認（auto-create-recheck.json/log/js）。本番サーバーや製品コードはこの追試では変更せず、ユーザーの実作品は自動投稿していない。
+
+## 2026-10-14 チャンネル容量の実確認（読み取り調査）
+
+- 2026-10-14T04:22:54.481Z（13:22 JST）に、両cloneの設定/投稿manifestが参照する13 GuildのGET /guilds/{id}、GET /guilds/{id}/channelsを照合した。Discord書込0、本番コード・.env・manifest・画像・生成物の変更なし。両.envの既定Guildは試験用であり、実運用サーバーはmanifestに記録された月別Guild。チャンネル数はカテゴリを含み、threadsを除く。証拠はGit対象外のtmp/channel-capacity-audit-20261014/summary.json。
+
+| 月 | メイン側 合計 / 空き | rirr側 合計 / 空き |
+| --- | ---: | ---: |
+| 2026-05 | 319 / 181 | 133 / 367 |
+| 2026-06 | 301 / 199 | 142 / 358 |
+| 2026-07 | 323 / 177 | 119 / 381 |
+| 2026-08 | 448 / 52 | 126 / 374 |
+| 2026-09 | 500 / 0 | 187 / 313 |
+| 2026-10 | 334 / 166 | 94 / 406 |
+
+- 共通の試験用は11 / 空き489。メイン9月は480 text＋20 categoriesで既に上限。8月は428 text＋20 categoriesで、限定作品vp0831-1カテゴリは子チャンネル50の上限にも到達。10月は321 text＋13 categories。上記は確認時点の値で、今後の投稿数は未指定。
+- 公式仕様を2026-10-14に再確認: voice/text/categoriesの合計500、カテゴリ内50、サーバーカテゴリ50はBoost Level 1～3でも同じ（https://support.discord.com/hc/en-us/articles/33694251638295-Discord-Account-Caps-Server-Caps-and-More）。threadsは通常チャンネル上限に数えられず、active threadsに別制限/自動アーカイブがある（https://github.com/discord/discord-api-docs/blob/main/developers/topics/threads.mdx）。
+- 対策案のみ: 短期は前回と同様の安全なチャンネル集約または別Guildへの分配。長期はフォーラム/スレッドで1作品1投稿へ変え、作品名で個別に探せる構成を検討する。現行ツールは通常textチャンネルを作品ごとに作る方式で、フォーラム対応には新しい投稿/履歴/スキップ/権限/アーカイブ設計と検証が必要。既存チャンネルをForumへそのまま変換して全メッセージが自動移行するとは扱わない。
+- 現行CLIにはカテゴリ内50の事前判定はあるが、サーバー全体500の事前判定はない。今後の改善案は投稿計画時に既存チャンネル＋新規作品チャンネル＋新規カテゴリを照合し、必要枠/不足数を表示すること。今回は実装・削除・移行・投稿・commit/pushを行っていない。
+- **その後のユーザー方針:** 過去月は基本的に増えないためそのまま維持し、今後増えるメイン10月だけ対策を検討する。rirrも現方式を維持。現時点ではフォーラム方式の説明依頼であり、実装・Community有効化・Discord移行は未承認。
+- **フォーラム導入前提の実確認:** 2026-10-14にメイン10月Guild 1510449483601940642のGETを再実施し、featuresにCOMMUNITYがないことを確認（Community未有効）。公式FAQではForum利用にCommunityが必要。ルール/運営更新チャンネル、認証/メディア設定等の要件確認が必要で、支援者ロール/閲覧制限/年齢制限を保持する設計とする。既存作品はそのまま、今後の作品だけ新Forumに1作品1post（ZIP/PDFはpost内）で投稿する併用案を説明する。自動で既存投稿をForumへ移せるとは扱わない。投稿タイトル検索/タグ/リスト・ギャラリー/Older Postsの仕様はhttps://support.discord.com/hc/en-us/articles/6208479917079-Forum-Channels-FAQ、Community要件はhttps://support.discord.com/hc/en-us/articles/360047132851-Enabling-Your-Community-Serverで確認。実サーバーは変更していない。
+- **試験用フォーラム体験の承認・完了:** その後ユーザーが試験用Guild 1504181413937811517だけのCommunity有効化、認証/メディア設定、準備チャンネル/Forum/サンプル作成を承認。BotはMANAGE_CHANNELSあり・ADMINISTRATOR/MANAGE_GUILDなしだったため、ユーザーがChromeを管理可能なえすえーアカウントへ切り替え、ブラウザからCommunityを設定した。最後のガイドライン同意と設定終了にも別途明示承認を取得。Botの管理者権限は追加せず、一般公開/Discoveryは有効化していない。
+- **完成したサンプル:** フォーラム体験・サンプルカテゴリ、体験用ルール（1559787081666920488）、体験用運営通知（1559787083718066206、everyone閲覧不可・Bot自身と管理者が閲覧）、リスト体験Forum（1559787996386041856）、ギャラリー体験Forum（1559788013909966919）を新設。各Forumに4作品（ZIP/PDFのみ、プレビュー付き2作品、4添付の分割作品）、計8posts/24添付。全て架空の図形画像から作ったサンプルで、実作品/.env/manifestは投稿していない。POSTは試験用だけ。試験用のチャンネル数11→16（準備5チャンネル）、8postsは通常チャンネル数に含まれない。
+- **検証事実:** 2026-10-14T04:41:33.742ZのAPI照合で8postsのparent/作者の本文なしメッセージ/添付数・名前・容量と、24添付のCDNダウンロードSHA-256一致を確認。既存11チャンネルのID/名前/種類/親/permission overwrites/NSFW不変を確認。Chrome実画面でリスト/ギャラリー、タグ別絵柄の絞り込み、1post内4添付を確認し、gallery.jpg/list.jpg/split-detail.jpgを保存。証拠/設定変更前backup/asset proof/作成ID/一回限りworkflowはGit対象外tmp/forum-demo-20261014に保持。Community導入前設定はpre-community-settings.jsonに保存。試験用サンプルは保持し、無断削除・Community無効化・Bot権限拡大をしない。本番Forum対応のコード変更やmain/rirrのGit操作は行っていない。
+
+## 2026-10-14 フォーラム表示・プレビュー選択の調査
+
+- **ユーザー希望（実装承認ではない）:** 日付付きカテゴリの代わりに日付付きForumを作り、その中へ作品ごとのpostを投稿。既定ギャラリー、画像プレビューを希望。今回は仕様調査と承認済み試験用での表示検証のみ。
+- **公式仕様/既定値:** default_forum_layout=1はリスト、2はギャラリー。default_sort_order=1は作成日時順。試験用のGETで2/1を確認。Chromeの「並び替え&表示」にはリスト/ギャラリー・初期設定へ戻すがあり、閲覧者の表示は固定されない。https://docs.discord.com/developers/resources/channel。
+- **Chrome確認事実:** Gallery体験ForumへE～Iの5postを追加。E: B.png→C.png、F: C.png→B.pngでは2枚が添付順に横並びで表示。最初の画像だけを選ぶ挙動ではない。G: ZIP/PDF→B.pngでもBが表示。H: 最初のpostはZIP/PDFのみ、その後ownerから画像Cを返信したがGallery cardは画像なし。I: 添付はZIP/PDFのみ、既存サンプルBのCDN画像をrich Embedのimageに指定するとBが表示。初回全case本文空欄。署名queryはEmbedへ保存せず公式referenceに従い除去。新規画像ホスティング・ユーザー実作品の投稿なし。
+- **提案/限界:** 代表画像を1枚だけ最初のpostへ添付する方式が単純。ZIP/PDF内から自動選択されない。複数画像は並置/トリミングされるため、代表1枚または複数コマをまとめた1画像にする案。元画像の先頭・指定画像等の選択基準はツール側で持つ。今回の2枚のChrome表示を全画像枚数/動画/スマホへ一般化しない。返信画像の後付けには公式FAQのAdd to Postの説明があるが、その操作は今回は未実施（https://support.discord.com/hc/en-us/articles/6208479917079-Forum-Channels-FAQ）。
+- **権限の新発見:** 現Botは初回Forum post作成/読取が可能だが、返信createMessageは403。通常SEND_MESSAGESとSEND_MESSAGES_IN_THREADSは別権限で、将来の分割添付の追加送信/再開にはthread送信権限の確認が必要。権限変更せずowner UIで画像Cを返信。返信ID1559796040842874950はAPIに存在するが添付fieldsが空で、原因未検証。画像返信はUI確認、返信添付のhash照合は主張しない。
+- **証拠/範囲:** tmp/forum-demo-20261014/thumbnail-probe.json、thumbnail-selection.jpg、thumbnail-selection-after-reply.jpg、probe script（Git対象外）。本番サーバー/投稿ツール/.env/ユーザー生成物/manifest/Gitは変更していない。
+- **3枚以上と左一覧の追加検証:** 同日ユーザー依頼で試験Galleryに3/4/6/10枚のpostを追加。番号01～10の架空SVG由来PNGを使用。Chromeで全画像complete/naturalWidth>0を確認して撮影。3枚は01が左大、02/03が右上下。4枚は2×2（01/02が左列、03/04が右列）。6枚/10枚は最初の4枚と+2/+6表示で、残りはpostを開いて閲覧する構成。大量画像がカード全面に全て並ぶとは扱わない。スマホ/別の縦横比は未検証。証拠は同tmpのmulti-image-probe.json/multi-image-gallery.jpg。
+- **検証Hだけの左一覧表示:** ownerアカウントのH画面で「フォロー中」と「この投稿をチャンネルリストに追加して通知を受け取りましょう」を確認。前回の承認済み検証でassistantがowner UIからHへ画像返信した際に自動参加/フォローとなり、左一覧へ追加されたもの。ほかのpostは開いて確認しただけで未フォロー。表示はアカウント別の参加/フォロー状態に依存し、通常チャンネル500枠の追加ではない。フォロー解除や通知設定は今回変更していない。
+
+## 2026-10-14 画像100枚＋ZIP/PDFのフォーラム投稿調査
+
+- **ユーザー希望/範囲:** 日付付きGallery Forumの1作品1post内へ画像100枚を10枚ずつ送り、最後にZIP/PDFを送る。代表画像は100枚からランダムでよい。今回は調査のみで、製品コード・Bot権限・本番Discord・Gitの変更は行っていない。
+- **公式仕様:** 1メッセージの添付上限10（error 30015、https://docs.discord.com/developers/topics/opcodes-and-status-codes）。Forum初回投稿/通常メッセージの最大リクエスト25MiB（https://docs.discord.com/developers/resources/channel、https://docs.discord.com/developers/resources/message）。通常は初回10枚＋追加9回各10枚＋最後ZIP/PDFの11メッセージで実現可能。容量超過時は10枚未満へ調整し、multipart overheadも含める。本文は添付があれば省略可能。既存の1ファイル10MiB未満運用は維持する案で、今回上限値を変更していない。
+- **ローカル検証事実:** 保持済みの私用100枚テストZIP（tmp/conversion-default-rollout-20261001/output-0/conversion-speed-probe-20261001/full-input.zip）からメモリ上でWebP100枚を読み、RIFF/WEBP signature、展開サイズ、全100枚の既存benchmark SHA-256一致を確認。ランダムな初回10枚＋残り90枚の元順序で10batchを構成し、全画像index100個が重複/欠落なく含まれることを確認。各batchは915,468～1,054,134bytes、最大1画像120,874bytes。この計画はオフライン試験であり、本番投稿/中断再開実装を検証したとは扱わない。証拠はGit対象外tmp/forum-demo-20261014/album-feasibility.jsとalbum-feasibility.json。
+- **容量/画質:** 上記sampleの画像合計10,047,984bytes、ZIP10,062,601bytes、PDF10,275,935bytes。従来添付20,338,536bytes→提案30,386,520bytes（約49.4%増、multipart overhead除外）。既存ZIP内WebPの直接利用なら新たな画像再変換は不要で、ZIP内画像と同じ品質/解像度を利用できる。Discord上の表示用縮小画像まで同一bytesとは主張しない。全作品の容量や実投稿時間へ一般化しない。送信回数/待機が増えるため投稿は遅くなる可能性があり、実測時間は未確認。
+- **プレビュー/再開設計案:** 初回投稿に代表画像を含める。確認済みPC画面では初回10枚の最初4枚がGallery、先頭1枚がListに使われる。Discordが100枚からランダム抽選するとは扱わず、ツールが最初に選択して初回へ配置する。選択結果/送信順/画像hash/作品threadID/各batchのmessageIDを永続記録し、再開時に再抽選/既送信batchの再送をしない。通信結果不明時は遠隔照合を行い、無条件POST再試行をしない。アーカイブ済みthreadも保存IDから確認する。重い作品の分割ZIP/PDFは全partの画像を1作品postへ集め、画像の重複/欠落・添付数/容量を検証する必要がある。
+- **現ツールの不足/権限:** src/cli.jsの入力計画はZIP/PDF限定で、通常text/category方式。画像読取/Forum作成/10枚・容量batch化/画像単位履歴を追加する必要がある。既存の処理済みスキップ、出力検証、Bot共通API待機、Guild/manifest/input排他を維持する。試験用Botのthread返信403を前回確認しており、追加送信にはSEND_MESSAGES_IN_THREADSが必要（https://docs.discord.com/developers/topics/threads）。権限を拡大していないため、画像100枚＋最後ZIP/PDFの全工程を実Discordで送る試験は未実施。初回10枚のPNG添付/表示は前回成功済みだが、WebP版の実Forum表示とスマホ表示は別途検証が必要。
+
 ## プロジェクト概要
 
 このプロジェクトは、Discordサーバー向けにカテゴリ/チャンネルを自動作成し、zip/pdfファイルを一括投稿するためのローカルCLIツールです。あわせて、PNG/JPG画像群からDiscord Botのアップロード制限に収まるzip/pdfを生成する画像変換CLIも持っています。

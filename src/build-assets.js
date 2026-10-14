@@ -180,7 +180,11 @@ async function discoverImageSets(inputDir, options) {
     }
 
     const parsed = parseImageSetDir(inputDir, dir, options.fallbackCategory);
-    const key = `${parsed.category}\0${parsed.name}`;
+    // The category portion is deliberately the relative output path.  For the
+    // new layout this is `<Discord category>/<forum>`, which keeps identical
+    // work names in different Discord categories independent all the way
+    // through the output, pending markers, profiles, and resume checks.
+    const key = `${canonicalGroupKey(parsed.category)}\0${canonicalGroupKey(parsed.name)}`;
     const sourceType = parsed.sourceType || detectDominantSourceType(files);
     const candidate = {
       ...parsed,
@@ -209,18 +213,43 @@ async function walkImageDirs(dir, results) {
   const hasImage = entries.some(
     (entry) => entry.isFile() && IMAGE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())
   );
+  const childDirectories = entries.filter((entry) => entry.isDirectory());
 
   if (hasImage) {
+    // A work directory is a leaf.  Previously this early return silently
+    // ignored child works when somebody placed a stray image directly beside
+    // the child folders, which could produce an incomplete archive.  Refuse
+    // the ambiguous layout before any output is created.
+    for (const child of childDirectories) {
+      if (await containsImageFiles(path.join(dir, child.name))) {
+        throw new Error(
+          `画像フォルダに直接画像と子フォルダの画像が混在しています: ${dir}\n` +
+          "作品フォルダを分けて、画像を作品フォルダ直下へ配置してください。"
+        );
+      }
+    }
     results.push(dir);
     return;
   }
 
-  for (const entry of entries) {
-    if (!entry.isDirectory()) {
-      continue;
-    }
+  for (const entry of childDirectories) {
     await walkImageDirs(path.join(dir, entry.name), results);
   }
+}
+
+async function containsImageFiles(dir) {
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  if (entries.some(
+    (entry) => entry.isFile() && IMAGE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())
+  )) {
+    return true;
+  }
+  for (const entry of entries) {
+    if (entry.isDirectory() && await containsImageFiles(path.join(dir, entry.name))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function getImageFiles(dir) {
@@ -233,14 +262,46 @@ async function getImageFiles(dir) {
 }
 
 function parseImageSetDir(inputDir, dir, fallbackCategory) {
-  const parent = path.dirname(dir);
+  const relative = path.relative(path.resolve(inputDir), path.resolve(dir));
+  const segments = relative.split(path.sep).filter(Boolean);
+  if (segments.length < 1 || segments.length > 3) {
+    throw new Error(
+      `画像フォルダの階層が曖昧です（${segments.length}階層）: ${dir}\n` +
+      "対応する配置は raw_images\\作品、raw_images\\カテゴリ\\作品、" +
+      "raw_images\\カテゴリ\\フォーラム\\作品 のいずれかです。"
+    );
+  }
+
   const dirName = path.basename(dir);
   const match = dirName.match(/^(.*)_(png|jpg|jpeg|webp)$/i);
   const name = match ? match[1] : dirName;
   const sourceType = match ? match[2].toLowerCase() : null;
-  const category = path.resolve(parent) === path.resolve(inputDir) ? fallbackCategory : path.basename(parent);
+  let category;
+  let categoryName;
+  let forumName = null;
 
-  return { category, name, sourceType };
+  if (segments.length === 1) {
+    // Legacy: raw_images/<作品>/...
+    category = fallbackCategory;
+    categoryName = fallbackCategory;
+  } else if (segments.length === 2) {
+    // Legacy: raw_images/<カテゴリまたは旧フォーラム>/<作品>/...
+    category = segments[0];
+    categoryName = segments[0];
+  } else {
+    // New: raw_images/<Discordカテゴリ>/<フォーラム>/<作品>/...
+    categoryName = segments[0];
+    forumName = segments[1];
+    category = path.join(categoryName, forumName);
+  }
+
+  return { category, categoryName, forumName, name, sourceType };
+}
+
+function canonicalGroupKey(value) {
+  // NTFS ignores casing but does not merge composed/decomposed Unicode names.
+  const key = String(value);
+  return process.platform === "win32" ? key.toLowerCase() : key;
 }
 
 function detectDominantSourceType(files) {
@@ -1247,12 +1308,14 @@ Usage:
 
 Input:
   raw_images/
-    title_png/*.png
-    title_jpg/*.jpg
+    category/forum/title/*.png
+    category/forum/title_png/*.png
+    category/forum/title_jpg/*.jpg
+  Legacy shallow layouts are also supported: title/*.png or category/title/*.png
 
 Output:
   optimized_webp_pdf/
-    category/
+    category/forum/
       title.zip
       title.pdf
       title.assets.json
