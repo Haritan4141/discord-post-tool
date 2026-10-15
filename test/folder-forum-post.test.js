@@ -41,7 +41,7 @@ async function fixture(t, count = 1) {
   const id = () => String(++state.sequence);
   function message(channelId, payload, files, messageId = id()) {
     assert.equal(payload.content, undefined);
-    const result = { id: messageId, channel_id: channelId, author: { id: "901" }, nonce: payload.nonce,
+    const result = { id: messageId, channel_id: channelId, author: { id: "901" }, nonce: payload.nonce, flags: payload.flags,
       attachments: files.map(f => ({ id: id(), filename: f.name, size: f.size })) };
     state.messages.push(result); return result;
   }
@@ -69,9 +69,14 @@ async function fixture(t, count = 1) {
       return result;
     },
     async createForumThread(forumId, payload, files) {
+      if (state.failure === "thread-before" || state.failure === "thread-403") {
+        const failure = state.failure; state.failure = null;
+        throw Object.assign(new Error(failure), failure === "thread-403" ? { status: 403 } : {});
+      }
       const thread = { id: id(), guild_id: "900", parent_id: forumId, name: payload.name, type: 11,
         thread_metadata: { archived: false, locked: false } };
       state.threads.push(thread); thread.message = message(thread.id, payload.message, files, thread.id);
+      if (state.failure === "thread-after") { state.failure = null; throw new Error("lost starter response"); }
       if (state.threadResponseTransform) {
         const transform = state.threadResponseTransform; state.threadResponseTransform = null;
         return transform(thread);
@@ -88,8 +93,8 @@ async function fixture(t, count = 1) {
       if (route === "/guilds/900") return { id: "900", features: ["COMMUNITY"], roles: [{ id: "900", permissions: state.permissions }] };
       if (route === "/users/@me") return { id: "901" };
       if (route === "/guilds/900/members/901") return { roles: [] };
-      if (route === "/guilds/900/threads/active") return { threads: state.threads };
-      if (route.includes("/threads/archived/public")) return { threads: [], has_more: false };
+      if (route === "/guilds/900/threads/active") return { threads: state.threads.filter(t => !t.thread_metadata?.archived) };
+      if (route.includes("/threads/archived/public")) return { threads: state.threads.filter(t => t.thread_metadata?.archived && t.parent_id === route.split("/")[2]), has_more: false };
       const parts = route.split("/");
       if (parts[3] === "messages") return state.messages.find(m => m.id === parts[4] && m.channel_id === parts[2]);
       const channel = [...state.threads, ...state.channels].find(c => c.id === parts[2]);
@@ -124,6 +129,7 @@ test("nested folders create a public category and two child forums; 100 images p
   }
   for (const thread of f.state.threads) {
     const messages = f.state.messages.filter(m => m.channel_id === thread.id);
+    assert.deepEqual(messages.map(m => m.flags), [0, ...Array(10).fill(4096)]);
     assert.deepEqual(messages.map(m => m.attachments.length), [...Array(10).fill(10), 2]);
     assert.equal(new Set(messages.slice(0, 10).flatMap(m => m.attachments.map(a => a.filename))).size, 100);
     assert.deepEqual(messages.at(-1).attachments.map(a => a.filename), ["work.zip", "work.pdf"]);
@@ -222,6 +228,7 @@ test("definite category refusal allows retry; lost forum response cannot duplica
   await assert.rejects(f.run(), /category 403/); f.state.failure = "forum-after";
   await assert.rejects(f.run(), /lost forum response/);
   await f.run(); assert.deepEqual(f.state.creates.map(c => c.type), [4, 15]); assert.equal(f.state.threads.length, 1);
+  assert.equal(f.state.messages.filter(m => m.flags === 0).length, 1);
 });
 
 test("moving an old recorded work into a new folder namespace cannot repost it", async t => {
@@ -298,4 +305,133 @@ test("legacy channels journals also preserve prototype category and work names",
   assert.ok(Object.hasOwn(saved.guilds["900"].categories.__proto__.groups, "constructor"));
   assert.equal({}.channelId, undefined); assert.equal(f.state.messages.length, 1);
   await f.run(["--posting-layout", "channels"]); assert.equal(f.state.messages.length, 1);
+});
+
+const forumJournal = saved => saved.guilds["900"].folderCategories["20261014"].forums.forum;
+const normalMessages = state => state.messages.filter(m => m.flags === 0);
+
+test("each Forum reserves exactly one normal starter across multiple works, later additions and reruns", async t => {
+  const f = await fixture(t, 15);
+  await f.add("20261014", "forum", "work2"); await f.add("20261014", "forum2");
+  await f.run();
+  assert.equal(normalMessages(f.state).length, 2);
+  for (const forum of f.state.channels.filter(c => c.type === 15)) {
+    const threads = f.state.threads.filter(thread => thread.parent_id === forum.id);
+    const normal = normalMessages(f.state).filter(m => threads.some(thread => thread.id === m.channel_id));
+    assert.equal(normal.length, 1); assert.equal(normal[0].id, threads[0].id);
+    assert(f.state.messages.filter(m => threads.some(thread => thread.id === m.channel_id) && m.id !== normal[0].id).every(m => m.flags === 4096));
+  }
+  const before = await f.saved();
+  const reservation = forumJournal(before).firstMessageNotification;
+  assert.equal(reservation.firstPost.nonce, forumJournal(before).groups.work.forum.batches[0].nonce);
+  await f.add("20261014", "forum", "work3"); await f.run(); await f.run();
+  assert.equal(normalMessages(f.state).length, 2);
+  assert.deepEqual(forumJournal(await f.saved()).firstMessageNotification, reservation);
+});
+
+test("lost starter response is recovered from an archive without another normal notification", async t => {
+  const f = await fixture(t); f.state.failure = "thread-after";
+  await assert.rejects(f.run(), /lost starter response/);
+  const reservation = forumJournal(await f.saved()).firstMessageNotification;
+  assert.equal(normalMessages(f.state).length, 1);
+  f.state.threads[0].thread_metadata.archived = true;
+  await f.add("20261014", "forum", "work2"); await f.run(); await f.run();
+  assert.equal(f.state.threads.length, 2); assert.equal(normalMessages(f.state).length, 1);
+  assert.deepEqual(forumJournal(await f.saved()).firstMessageNotification, reservation);
+});
+
+test("unknown starter result stops without retry; definite refusal can retry the same reservation", async t => {
+  const unknown = await fixture(t); unknown.state.failure = "thread-before";
+  await assert.rejects(unknown.run(), /thread-before/);
+  await assert.rejects(unknown.run(), /初回投稿の結果が未確定/);
+  assert.equal(unknown.state.threads.length, 0); assert.equal(normalMessages(unknown.state).length, 0);
+  const refused = await fixture(t); refused.state.failure = "thread-403";
+  await assert.rejects(refused.run(), /thread-403/);
+  const reservation = forumJournal(await refused.saved()).firstMessageNotification;
+  await refused.run(); await refused.run();
+  assert.equal(normalMessages(refused.state).length, 1);
+  assert.deepEqual(forumJournal(await refused.saved()).firstMessageNotification, reservation);
+});
+
+test("existing Forums and migrated progress without notification markers never notify retroactively", async t => {
+  for (const keepHistory of [false, true]) {
+    const f = await fixture(t); await f.run();
+    const saved = await f.saved();
+    if (keepHistory) delete forumJournal(saved).firstMessageNotification;
+    else {
+      saved.guilds["900"].folderCategories["20261014"].forums.forum = { groups: {} };
+      for (const ext of ["zip", "pdf"]) await fs.unlink(path.join(f.input, "20261014", "forum", `work.${ext}`));
+    }
+    await fs.writeFile(f.manifest, JSON.stringify(saved));
+    await f.add("20261014", "forum", "work2"); await f.run();
+    assert.equal(normalMessages(f.state).length, 1);
+    assert.equal(forumJournal(await f.saved()).firstMessageNotification.firstPost, null);
+  }
+});
+
+test("empty preexisting Forum stays silent and uncertain Forum creation retains the notification lineage", async t => {
+  const f = await fixture(t); f.state.failure = "forum-after";
+  await assert.rejects(f.run(), /lost forum response/);
+  const saved = await f.saved(); delete forumJournal(saved).forumCreating;
+  await fs.writeFile(f.manifest, JSON.stringify(saved));
+  await f.run(); assert.equal(normalMessages(f.state).length, 0);
+  assert.equal(forumJournal(await f.saved()).firstMessageNotification.firstPost, null);
+  const recovered = await fixture(t); recovered.state.failure = "forum-after";
+  await assert.rejects(recovered.run(), /lost forum response/);
+  await recovered.run(); await recovered.run();
+  assert.equal(normalMessages(recovered.state).length, 1);
+});
+
+test("remote posts arriving before a recovered Forum or reserved starter keep the next upload silent", async t => {
+  for (const failure of ["forum-after", "thread-403"]) {
+    const f = await fixture(t); f.state.failure = failure;
+    await assert.rejects(f.run(), failure === "forum-after" ? /lost forum response/ : /thread-403/);
+    const forum = f.state.channels.find(c => c.type === 15);
+    f.state.threads.push({ id: "800", guild_id: "900", parent_id: forum.id, type: 11, name: "someone else's post",
+      thread_metadata: { archived: true, locked: false } });
+    await f.run(); assert.equal(normalMessages(f.state).length, 0);
+  }
+});
+
+test("corrupt Forum notification reservations fail before any further API writes", async t => {
+  for (const change of [
+    cm => { cm.firstMessageNotification = null; },
+    cm => { cm.firstMessageNotification.version = 2; },
+    cm => { cm.firstMessageNotification.forumId = "999"; },
+    cm => { cm.firstMessageNotification.firstPost = {}; },
+    cm => { cm.firstMessageNotification.firstPost.workName = "missing"; },
+    cm => { cm.firstMessageNotification.firstPost.nonce = "a".repeat(25); },
+  ]) {
+    const f = await fixture(t); await f.run();
+    const saved = await f.saved(); change(forumJournal(saved)); await fs.writeFile(f.manifest, JSON.stringify(saved));
+    await f.add("20261014", "forum2");
+    await assert.rejects(f.run(), /Invalid Forum notification/);
+    assert.equal(f.state.creates.length, 2); assert.equal(f.state.messages.length, 2);
+  }
+});
+
+test("failed durable reservation save never starts a notification-bearing upload", async t => {
+  const { buildLocalPlan } = require("../src/cli");
+  const { prepareForumPlan, executeForumPlan } = require("../src/forum-post");
+  const f = await fixture(t), manifest = { version: 1, guilds: {} };
+  const limits = { maxFileBytes: 10 * 1024 * 1024, maxRequestBytes: 25 * 1024 * 1024, uploadMode: "auto" };
+  const plan = await buildLocalPlan(f.input, { ...limits, postingLayout: "forum" });
+  await prepareForumPlan({ ...limits, plan, manifest, guildId: "900" });
+  await assert.rejects(executeForumPlan({ ...limits, plan, manifest, guildId: "900", api: f.api,
+    saveManifest: async (_file, value) => {
+      if (value.guilds["900"]?.folderCategories?.["20261014"]?.forums?.forum?.firstMessageNotification) throw new Error("reservation save failed");
+    } }), /reservation save failed/);
+  assert.equal(f.state.messages.length, 0);
+});
+
+test("multipart transport preserves one normal starter and suppresses mentions", async () => {
+  const { DiscordApi } = require("../src/cli");
+  const api = new DiscordApi("fake-fixture");
+  const files = [{ name: "sample.webp", data: Buffer.from("fixture"), mime: "image/webp" }];
+  const payload = { name: "work", message: { flags: 0, allowed_mentions: { parse: ["everyone"] } } };
+  const starter = JSON.parse((await api.attachmentForm(payload, files, true)).get("payload_json"));
+  assert.equal(starter.message.flags, 0); assert.deepEqual(starter.message.allowed_mentions, { parse: [] });
+  assert.equal(starter.message.content, undefined);
+  const reply = JSON.parse((await api.attachmentForm({ flags: 4096 }, files)).get("payload_json"));
+  assert.equal(reply.flags, 4096); assert.deepEqual(reply.allowed_mentions, { parse: [] });
 });

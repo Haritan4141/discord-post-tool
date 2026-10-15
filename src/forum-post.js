@@ -6,6 +6,7 @@ const { folderCategory, forumManifest, groupManifest } = require("./forum-folder
 const MiB = 1024 * 1024;
 // Leaves room for multipart boundaries, metadata and UTF-8 filenames.
 const OVERHEAD = 48 * 1024;
+const SUPPRESS_NOTIFICATIONS = 1 << 12;
 const REQUIRED = { VIEW_CHANNEL: 1024n, SEND_MESSAGES: 2048n, ATTACH_FILES: 32768n,
   READ_MESSAGE_HISTORY: 65536n, SEND_MESSAGES_IN_THREADS: 1n << 38n };
 const sha = data => crypto.createHash("sha256").update(data).digest("hex");
@@ -203,6 +204,43 @@ function assertCreatedForum(forum, payload, guildId) {
   }
 }
 
+function validateFirstMessageNotification(cm, forumId) {
+  if (!Object.hasOwn(cm, "firstMessageNotification")) return null;
+  const journal = cm.firstMessageNotification;
+  if (!journal || journal.version !== 1 || !validId(journal.forumId) || journal.forumId !== forumId ||
+    (journal.firstPost !== null && (!journal.firstPost || typeof journal.firstPost.workName !== "string" ||
+      !/^[a-f0-9]{25}$/.test(journal.firstPost.nonce)))) {
+    throw new Error("Invalid Forum notification journal");
+  }
+  if (journal.firstPost !== null) {
+    const selected = Object.hasOwn(cm.groups, journal.firstPost.workName) && cm.groups[journal.firstPost.workName]?.forum;
+    if (!selected || selected.batches?.[0]?.nonce !== journal.firstPost.nonce ||
+      !["pending", "sending", "done"].includes(selected.batches[0].status)) {
+      throw new Error("Invalid Forum notification work reservation");
+    }
+  }
+  return journal;
+}
+
+async function initializeFirstMessageNotification(context, cm, category, forum, created, threadIndex) {
+  if (validateFirstMessageNotification(cm, forum.id)) return;
+  let firstPost = null;
+  // Never retroactively notify existing Forums or work started by older versions.
+  if (created && !Object.values(cm.groups).some(group => group?.forum)) {
+    threadIndex.names = new Set((await listForumThreads(context.api, context.guildId, forum.id)).map(t => t.name));
+    if (threadIndex.names.size === 0) {
+      const group = category.groups.find(g => !g.legacy);
+      const gm = groupManifest(context.manifest, context.guildId, category, group.baseName, true);
+      gm.forum = structuredClone(group.albumPlan);
+      firstPost = { workName: group.baseName, nonce: gm.forum.batches[0].nonce };
+    }
+  }
+  // The caller saves the Forum ID, selected album and immutable reservation together,
+  // before any starter POST. Sending/done batch recovery must never reassign it.
+  cm.firstMessageNotification = { version: 1, forumId: forum.id, firstPost };
+  validateFirstMessageNotification(cm, forum.id);
+}
+
 async function executeForumPlan(context) {
   const { api, guildId, plan, manifest, manifestPath, saveManifest } = context;
   const save = () => saveManifest(manifestPath, manifest);
@@ -240,6 +278,7 @@ async function executeForumPlan(context) {
     if (cm.forumId && !forum) throw new Error(`${category.name}: 保存済みフォーラムを確認できません。削除/閲覧権限を確認してください。`);
     if (!forum && matches.length > 1) throw new Error(`${category.name}: 同名フォーラムが複数あるため停止しました。`);
     forum ||= matches[0];
+    validateFirstMessageNotification(cm, forum?.id);
     if (forum && (forum.guild_id !== guildId || forum.name !== title(category.name) ||
       ((parent || context.forumParent) && forum.parent_id !== desiredParent) ||
       (cm.forumParentId !== undefined && (forum.parent_id || null) !== cm.forumParentId))) {
@@ -316,6 +355,7 @@ async function executeForumPlan(context) {
     }
     if (!payload) continue;
     if (parent) payload.parent_id = parent.channel.id;
+    const createdForNotification = !forum || Boolean(cm.forumCreating);
     if (!forum) {
       cm.forumCreating = { payload: structuredClone(payload) }; await save();
       try {
@@ -324,14 +364,17 @@ async function executeForumPlan(context) {
       }
       catch (error) { if (definiteRejection(error)) { delete cm.forumCreating; await save(); } throw error; }
     }
-    cm.forumId = forum.id; cm.forumParentId = forum.parent_id || null; delete cm.forumCreating; await save();
-    console.log(`[${category.name}] Forum ${forum.id}`);
     const threadIndex = { names: null };
+    cm.forumId = forum.id; cm.forumParentId = forum.parent_id || null;
+    await initializeFirstMessageNotification(context, cm, category, forum, createdForNotification, threadIndex);
+    delete cm.forumCreating; await save();
+    console.log(`[${category.name}] Forum ${forum.id}`);
     for (const group of category.groups.filter(g => !g.legacy)) {
       const gm = groupManifest(manifest, guildId, category, group.baseName, true);
       gm.forum ||= structuredClone(group.albumPlan);
       await save();
-      await uploadAlbum({ ...context, category, group, forum, album: gm.forum, user, save, threadIndex });
+      await uploadAlbum({ ...context, category, group, forum, album: gm.forum, user, save, threadIndex,
+        notification: cm.firstMessageNotification });
     }
   }
   console.log("Done.");
@@ -458,7 +501,7 @@ async function uploadLegacySafely(context) {
     send.status = "sending"; await save();
     let message;
     try {
-      message = await api.createMessage(channel.id, { nonce: send.nonce, enforce_nonce: true, flags: 4096 }, current);
+      message = await api.createMessage(channel.id, { nonce: send.nonce, enforce_nonce: true, flags: SUPPRESS_NOTIFICATIONS }, current);
       if (!validId(message?.id) || message.channel_id !== channel.id) throw new Error("Legacy send response invalid");
     } catch (error) { if (definiteRejection(error)) { send.status = "pending"; await save(); } throw error; }
     finishBatch(send, message, current, user.id); current.forEach(f => mark(f, message.id)); await save();
@@ -467,11 +510,14 @@ async function uploadLegacySafely(context) {
 
 async function listForumThreads(api, guildId, forumId) {
   const active = await api.request("GET", `/guilds/${guildId}/threads/active`);
+  if (!Array.isArray(active?.threads)) throw new Error("Invalid active Forum thread listing");
   const candidates = active.threads.filter(t => t.parent_id === forumId);
   let before;
   for (;;) {
     const page = await api.request("GET", `/channels/${forumId}/threads/archived/public?limit=100` +
       (before ? `&before=${encodeURIComponent(before)}` : ""));
+    if (!Array.isArray(page?.threads) || typeof page.has_more !== "boolean" ||
+      page.threads.some(t => t.parent_id !== forumId)) throw new Error("Invalid archived Forum thread listing");
     candidates.push(...page.threads);
     if (!page.has_more) break;
     const cursor = page.threads.at(-1)?.thread_metadata?.archive_timestamp;
@@ -509,8 +555,12 @@ async function uploadAlbum(context) {
     if (context.threadIndex.names.has(title(group.baseName))) throw new Error(`${group.baseName}: 同名の作品投稿が既に存在します。元のmanifestを確認してください。重複投稿はしません。`);
     album.batches[0].status = "sending"; await save();
     let thread;
+    const firstPost = context.notification.firstPost;
+    const starterFlags = firstPost?.workName === group.baseName && firstPost.nonce === album.batches[0].nonce &&
+      context.threadIndex.names.size === 0
+      ? 0 : SUPPRESS_NOTIFICATIONS;
     try { thread = await api.createForumThread(forum.id, {
-      name: title(group.baseName), auto_archive_duration: 1440, message: { flags: 4096 },
+      name: title(group.baseName), auto_archive_duration: 1440, message: { flags: starterFlags },
     }, firstFiles);
       if (!validId(thread?.id) || !validId(thread.message?.id) || thread.type !== 11 ||
         thread.parent_id !== forum.id || thread.guild_id !== context.guildId || thread.name !== title(group.baseName) ||
@@ -553,7 +603,7 @@ async function uploadAlbum(context) {
     batch.status = "sending"; await save();
     console.log(`[${context.category.name}] ${group.baseName}: ${index + 1}/${album.batches.length} uploading ${current.length} ${current[0].type === "image" ? "images" : "ZIP/PDF files"}`);
     let message;
-    try { message = await api.createMessage(thread.id, { nonce: batch.nonce, enforce_nonce: true, flags: 4096 }, current);
+    try { message = await api.createMessage(thread.id, { nonce: batch.nonce, enforce_nonce: true, flags: SUPPRESS_NOTIFICATIONS }, current);
       if (!validId(message?.id) || message.channel_id !== thread.id) throw new Error("追加投稿の応答が不正です。結果を照合してから再開します。");
     }
     catch (error) { if (definiteRejection(error)) { batch.status = "pending"; await save(); } throw error; }

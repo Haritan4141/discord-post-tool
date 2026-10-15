@@ -41,7 +41,7 @@ async function fixture(t, count = 100, split = false) {
   const id = () => String(++state.sequence);
   function message(channelId, payload, files, messageId = id()) {
     assert.equal(payload.content, undefined);
-    const m = { id: messageId, channel_id: channelId, author: { id: "bot" }, nonce: payload.nonce,
+    const m = { id: messageId, channel_id: channelId, author: { id: "bot" }, nonce: payload.nonce, flags: payload.flags,
       attachments: files.map(f => ({ id: id(), filename: state.sanitizeNames ? f.name.replace(/[^\x21-\x7e]/g, "") : f.name, size: f.size })) };
     state.messages.push(m); return m;
   }
@@ -79,7 +79,7 @@ async function fixture(t, count = 100, split = false) {
       if (route === "/users/@me") return { id: "bot" };
       if (route === "/guilds/guild/members/bot") return { roles: [] };
       if (route === "/guilds/guild/threads/active") return { threads: state.threads.filter(t => !t.thread_metadata.archived) };
-      if (route.includes("/threads/archived/public")) return { threads: state.threads.filter(t => t.thread_metadata.archived), has_more: false };
+      if (route.includes("/threads/archived/public")) return { threads: state.threads.filter(t => t.thread_metadata.archived && t.parent_id === route.split("/")[2]), has_more: false };
       const parts = route.split("/");
       if (parts[3] === "messages") return state.messages.find(m => m.id === parts[4] && m.channel_id === parts[2]);
       const channel = [...state.threads, ...state.channels].find(c => c.id === parts[2]);
@@ -105,6 +105,7 @@ test("default forum sends 100 unique images in ten batches then ZIP/PDF and skip
   assert.equal(f.state.channels[0].default_forum_layout, 2);
   assert.equal(f.state.channels[0].nsfw, true);
   assert.equal(f.state.threads.length, 1);
+  assert.deepEqual(f.state.messages.map(m => m.flags), [0, ...Array(10).fill(4096)]);
   assert.deepEqual(f.state.messages.map(m => m.attachments.length), [...Array(10).fill(10), 2]);
   const names = f.state.messages.slice(0, 10).flatMap(m => m.attachments.map(a => a.filename));
   assert.equal(new Set(names).size, 100);
@@ -135,6 +136,7 @@ test("lost initial post response is recovered from an archived thread", async t 
   await assert.rejects(f.run(), /lost thread/);
   f.state.threads[0].thread_metadata.archived = true;
   await f.run(); assert.equal(f.state.threads.length, 1); assert.equal(f.state.messages.length, 11);
+  assert.equal(f.state.messages.filter(m => m.flags === 0).length, 1);
 });
 
 test("unknown send outcome with no matching message fails closed rather than blind retry", async t => {
